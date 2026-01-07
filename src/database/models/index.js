@@ -23,6 +23,7 @@ const sequelize = new Sequelize(
 const Branch = require('./Branch')(sequelize);
 const Role = require('./Role')(sequelize);
 const User = require('./User')(sequelize);
+const UserBranch = require('./UserBranch')(sequelize);
 const UserSession = require('./UserSession')(sequelize);
 const Category = require('./Category')(sequelize);
 const UnitOfMeasure = require('./UnitOfMeasure')(sequelize);
@@ -58,6 +59,7 @@ const models = {
   Branch,
   Role,
   User,
+  UserBranch,
   UserSession,
   Category,
   UnitOfMeasure,

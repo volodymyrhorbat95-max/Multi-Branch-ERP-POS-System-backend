@@ -1,7 +1,7 @@
 const { Op } = require('sequelize');
 const { v4: uuidv4 } = require('uuid');
 const {
-  Invoice, Sale, Customer, Branch, AFIPConfig, sequelize
+  Invoice, Sale, Customer, Branch, AFIPConfig, InvoiceType, sequelize
 } = require('../database/models');
 const { success, created, paginated } = require('../utils/apiResponse');
 const { NotFoundError, BusinessError } = require('../middleware/errorHandler');
@@ -345,46 +345,102 @@ exports.getStats = async (req, res, next) => {
   try {
     const { branch_id, start_date, end_date } = req.query;
 
-    const where = { status: 'APPROVED' };
-    if (branch_id) where.branch_id = branch_id;
+    logger.info(`Getting invoice stats - branch_id: ${branch_id}, start_date: ${start_date}, end_date: ${end_date}`);
+
+    const where = { status: 'ISSUED' };
     if (start_date || end_date) {
-      where.invoice_date = {};
-      if (start_date) where.invoice_date[Op.gte] = new Date(start_date);
-      if (end_date) where.invoice_date[Op.lte] = new Date(end_date);
+      where.issued_at = {};
+      if (start_date) where.issued_at[Op.gte] = new Date(start_date);
+      if (end_date) where.issued_at[Op.lte] = new Date(end_date);
     }
+
+    // Build include for branch filter through sale
+    const include = [
+      {
+        model: InvoiceType,
+        as: 'invoice_type',
+        attributes: []
+      }
+    ];
+
+    // Add sale join for branch filtering
+    if (branch_id) {
+      include.push({
+        model: Sale,
+        as: 'sale',
+        attributes: [],
+        where: { branch_id },
+        required: true
+      });
+    }
+
+    logger.info(`Invoice stats where clause: ${JSON.stringify(where)}`);
 
     // By invoice type
     const byType = await Invoice.findAll({
       where,
       attributes: [
-        'invoice_type',
-        [sequelize.fn('COUNT', sequelize.col('id')), 'count'],
-        [sequelize.fn('SUM', sequelize.col('total_amount')), 'total']
+        [sequelize.col('invoice_type.code'), 'invoice_type'],
+        [sequelize.fn('COUNT', sequelize.col('Invoice.id')), 'count'],
+        [sequelize.fn('SUM', sequelize.col('Invoice.total_amount')), 'total']
       ],
-      group: ['invoice_type']
+      include,
+      group: ['invoice_type.code'],
+      raw: true
     });
+
+    logger.info(`Invoice stats byType result: ${JSON.stringify(byType)}`);
 
     // Totals
     const totals = await Invoice.findOne({
       where,
       attributes: [
-        [sequelize.fn('COUNT', sequelize.col('id')), 'total_count'],
-        [sequelize.fn('SUM', sequelize.col('total_amount')), 'total_amount'],
-        [sequelize.fn('SUM', sequelize.col('tax_amount')), 'total_tax']
-      ]
+        [sequelize.fn('COUNT', sequelize.col('Invoice.id')), 'total_count'],
+        [sequelize.fn('SUM', sequelize.col('Invoice.total_amount')), 'total_amount'],
+        [sequelize.fn('SUM', sequelize.col('Invoice.tax_amount')), 'total_tax']
+      ],
+      include: branch_id ? [{
+        model: Sale,
+        as: 'sale',
+        attributes: [],
+        where: { branch_id },
+        required: true
+      }] : [],
+      raw: true
     });
+
+    logger.info(`Invoice stats totals result: ${JSON.stringify(totals)}`);
 
     // Pending invoices
+    const pendingWhere = { status: 'PENDING' };
     const pendingCount = await Invoice.count({
-      where: { ...where, status: 'PENDING' }
+      where: pendingWhere,
+      include: branch_id ? [{
+        model: Sale,
+        as: 'sale',
+        attributes: [],
+        where: { branch_id },
+        required: true
+      }] : []
     });
 
-    return success(res, {
+    logger.info(`Invoice stats pendingCount: ${pendingCount}`);
+
+    const response = {
       by_type: byType,
-      totals: totals?.toJSON() || { total_count: 0, total_amount: 0, total_tax: 0 },
+      totals: {
+        total_count: parseInt(totals?.total_count) || 0,
+        total_amount: parseFloat(totals?.total_amount) || 0,
+        total_tax: parseFloat(totals?.total_tax) || 0
+      },
       pending_count: pendingCount
-    });
+    };
+
+    logger.info(`Invoice stats response: ${JSON.stringify(response)}`);
+
+    return success(res, response);
   } catch (error) {
+    logger.error(`Invoice stats error: ${error.message}`, { stack: error.stack });
     next(error);
   }
 };

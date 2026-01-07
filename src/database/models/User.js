@@ -117,7 +117,11 @@ module.exports = (sequelize) => {
     User.hasMany(models.RegisterSession, { foreignKey: 'opened_by', as: 'opened_sessions' });
     User.hasMany(models.RegisterSession, { foreignKey: 'closed_by', as: 'closed_sessions' });
     User.hasMany(models.StockMovement, { foreignKey: 'performed_by', as: 'stock_movements' });
-    User.belongsToMany(models.Branch, { through: 'user_branches', foreignKey: 'user_id', as: 'branches' });
+    User.belongsToMany(models.Branch, {
+      through: models.UserBranch,
+      foreignKey: 'user_id',
+      as: 'branches'
+    });
   };
 
   return User;

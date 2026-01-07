@@ -35,6 +35,22 @@ router.get(
 );
 
 /**
+ * @route   GET /api/v1/invoices/stats
+ * @desc    Get invoice statistics
+ * @access  Private
+ */
+router.get(
+  '/stats',
+  [
+    query('branch_id').optional().isUUID(4),
+    query('start_date').optional().isISO8601(),
+    query('end_date').optional().isISO8601(),
+    validate
+  ],
+  invoiceController.getStats
+);
+
+/**
  * @route   GET /api/v1/invoices/types
  * @desc    Get invoice types (A, B, C)
  * @access  Private

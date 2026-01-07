@@ -108,6 +108,11 @@ module.exports = (sequelize) => {
     Branch.hasMany(models.DailyReport, { foreignKey: 'branch_id', as: 'daily_reports' });
     Branch.hasMany(models.StockMovement, { foreignKey: 'branch_id', as: 'stock_movements' });
     Branch.hasMany(models.Alert, { foreignKey: 'branch_id', as: 'alerts' });
+    Branch.belongsToMany(models.User, {
+      through: models.UserBranch,
+      foreignKey: 'branch_id',
+      as: 'assigned_users'
+    });
   };
 
   return Branch;

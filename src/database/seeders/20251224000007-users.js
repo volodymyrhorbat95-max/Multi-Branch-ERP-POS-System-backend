@@ -29,6 +29,7 @@ module.exports = {
       {
         id: uuidv4(),
         role_id: ownerRole.id,
+        primary_branch_id: branch1.id,
         first_name: 'Juan',
         last_name: 'Owner',
         email: 'juan@petfood.com',
@@ -37,11 +38,12 @@ module.exports = {
         phone: '+54 11 1111-1111',
         is_active: true,
         created_at: new Date(),
-        
+        updated_at: new Date()
       },
       {
         id: uuidv4(),
         role_id: managerRole.id,
+        primary_branch_id: branch1.id,
         first_name: 'Maria',
         last_name: 'Gonzalez',
         email: 'maria@petfood.com',
@@ -50,11 +52,12 @@ module.exports = {
         phone: '+54 11 2222-2222',
         is_active: true,
         created_at: new Date(),
-        
+        updated_at: new Date()
       },
       {
         id: uuidv4(),
         role_id: cashierRole.id,
+        primary_branch_id: branch1.id,
         first_name: 'Carlos',
         last_name: 'Martinez',
         email: 'carlos@petfood.com',
@@ -63,11 +66,12 @@ module.exports = {
         phone: '+54 11 3333-3333',
         is_active: true,
         created_at: new Date(),
-        
+        updated_at: new Date()
       },
       {
         id: uuidv4(),
         role_id: cashierRole.id,
+        primary_branch_id: branch2.id,
         first_name: 'Ana',
         last_name: 'Rodriguez',
         email: 'ana@petfood.com',
@@ -76,11 +80,12 @@ module.exports = {
         phone: '+54 11 4444-4444',
         is_active: true,
         created_at: new Date(),
-        
+        updated_at: new Date()
       },
       {
         id: uuidv4(),
         role_id: cashierRole.id,
+        primary_branch_id: branch3.id,
         first_name: 'Luis',
         last_name: 'Fernandez',
         email: 'luis@petfood.com',
@@ -89,11 +94,12 @@ module.exports = {
         phone: '+54 11 5555-5555',
         is_active: true,
         created_at: new Date(),
-        
+        updated_at: new Date()
       },
       {
         id: uuidv4(),
         role_id: cashierRole.id,
+        primary_branch_id: branch4.id,
         first_name: 'Sofia',
         last_name: 'Lopez',
         email: 'sofia@petfood.com',
@@ -102,7 +108,7 @@ module.exports = {
         phone: '+54 11 6666-6666',
         is_active: true,
         created_at: new Date(),
-        
+        updated_at: new Date()
       }
     ];
 
@@ -128,8 +134,7 @@ module.exports = {
         user_id: owner.id,
         branch_id: branch.id,
         is_primary: branch.code === 'BR001',
-        created_at: new Date(),
-        
+        created_at: new Date()
       });
     });
 
@@ -139,8 +144,7 @@ module.exports = {
       user_id: manager.id,
       branch_id: branch1.id,
       is_primary: true,
-      created_at: new Date(),
-      
+      created_at: new Date()
     });
 
     // Carlos assigned to Branch 1
@@ -149,8 +153,7 @@ module.exports = {
       user_id: carlos.id,
       branch_id: branch1.id,
       is_primary: true,
-      created_at: new Date(),
-      
+      created_at: new Date()
     });
 
     // Ana assigned to Branch 2
@@ -159,8 +162,7 @@ module.exports = {
       user_id: ana.id,
       branch_id: branch2.id,
       is_primary: true,
-      created_at: new Date(),
-      
+      created_at: new Date()
     });
 
     // Luis assigned to Branch 3
@@ -169,8 +171,7 @@ module.exports = {
       user_id: luis.id,
       branch_id: branch3.id,
       is_primary: true,
-      created_at: new Date(),
-      
+      created_at: new Date()
     });
 
     // Sofia assigned to Branch 4
@@ -179,8 +180,7 @@ module.exports = {
       user_id: sofia.id,
       branch_id: branch4.id,
       is_primary: true,
-      created_at: new Date(),
-      
+      created_at: new Date()
     });
 
     await queryInterface.bulkInsert('user_branches', userBranches);
