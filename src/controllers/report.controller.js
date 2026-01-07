@@ -36,13 +36,97 @@ exports.generateDailyReportData = async (branchId, date) => {
   const endOfDay = new Date(date);
   endOfDay.setHours(23, 59, 59, 999);
 
+  const dateString = date.toISOString().split('T')[0];
+
+  // Get branch info with closing times
+  const branch = await Branch.findByPk(branchId, {
+    attributes: ['id', 'name', 'code', 'midday_closing_time', 'evening_closing_time', 'has_shift_change']
+  });
+
+  // Get all sessions for this day
+  const sessions = await RegisterSession.findAll({
+    where: {
+      branch_id: branchId,
+      business_date: dateString
+    },
+    include: [
+      { model: User, as: 'opener', attributes: ['first_name', 'last_name'] },
+      { model: User, as: 'closer', attributes: ['first_name', 'last_name'] }
+    ],
+    order: [['shift_type', 'ASC'], ['opened_at', 'ASC']]
+  });
+
+  // Get sales for each session with payment breakdown
+  const shiftsData = await Promise.all(sessions.map(async (session) => {
+    const sessionSales = await Sale.findAll({
+      where: {
+        session_id: session.id,
+        status: 'COMPLETED'
+      },
+      include: [{
+        model: SalePayment,
+        as: 'payments',
+        include: [{ model: PaymentMethod, as: 'payment_method', attributes: ['code', 'name'] }]
+      }]
+    });
+
+    // Calculate payment breakdown
+    const paymentTotals = {
+      cash: 0,
+      card: 0,
+      qr: 0,
+      transfer: 0
+    };
+
+    sessionSales.forEach(sale => {
+      sale.payments?.forEach(payment => {
+        const amount = parseFloat(payment.amount);
+        const code = payment.payment_method?.code?.toUpperCase();
+        if (code === 'CASH') paymentTotals.cash += amount;
+        else if (code === 'CARD') paymentTotals.card += amount;
+        else if (code === 'QR') paymentTotals.qr += amount;
+        else if (code === 'TRANSFER') paymentTotals.transfer += amount;
+      });
+    });
+
+    const totalRevenue = sessionSales.reduce((sum, sale) => sum + parseFloat(sale.total_amount), 0);
+    const voidedSales = await Sale.count({
+      where: { session_id: session.id, status: 'VOIDED' }
+    });
+
+    return {
+      shift_type: session.shift_type,
+      session_id: session.id,
+      opened_at: session.opened_at,
+      closed_at: session.closed_at,
+      opened_by: session.opener ? `${session.opener.first_name} ${session.opener.last_name}` : null,
+      closed_by: session.closer ? `${session.closer.first_name} ${session.closer.last_name}` : null,
+      status: session.status,
+      sales_count: sessionSales.length,
+      total_revenue: totalRevenue,
+      expected_cash: paymentTotals.cash,
+      expected_card: paymentTotals.card,
+      expected_qr: paymentTotals.qr,
+      expected_transfer: paymentTotals.transfer,
+      declared_cash: session.declared_cash ? parseFloat(session.declared_cash) : null,
+      declared_card: session.declared_card ? parseFloat(session.declared_card) : null,
+      declared_qr: session.declared_qr ? parseFloat(session.declared_qr) : null,
+      declared_transfer: session.declared_transfer ? parseFloat(session.declared_transfer) : null,
+      discrepancy_cash: session.discrepancy_cash ? parseFloat(session.discrepancy_cash) : null,
+      discrepancy_card: session.discrepancy_card ? parseFloat(session.discrepancy_card) : null,
+      discrepancy_qr: session.discrepancy_qr ? parseFloat(session.discrepancy_qr) : null,
+      discrepancy_transfer: session.discrepancy_transfer ? parseFloat(session.discrepancy_transfer) : null,
+      voided_sales_count: voidedSales
+    };
+  }));
+
   const saleWhere = {
     branch_id: branchId,
     status: 'COMPLETED',
     created_at: { [Op.between]: [startOfDay, endOfDay] }
   };
 
-  // Sales totals
+  // Sales totals (for backward compatibility)
   const salesData = await Sale.findOne({
     where: saleWhere,
     attributes: [
@@ -90,8 +174,8 @@ exports.generateDailyReportData = async (branchId, date) => {
     group: ['payment_method_id', 'payment_method.id', 'payment_method.name', 'payment_method.code']
   });
 
-  // Sessions
-  const sessions = await RegisterSession.findAll({
+  // Session summary
+  const sessionSummary = await RegisterSession.findAll({
     where: {
       branch_id: branchId,
       opened_at: { [Op.between]: [startOfDay, endOfDay] }
@@ -146,9 +230,30 @@ exports.generateDailyReportData = async (branchId, date) => {
     type: sequelize.QueryTypes.SELECT
   });
 
+  // Calculate daily totals from shifts
+  const dailyTotals = {
+    total_cash: shiftsData.reduce((sum, s) => sum + (s.expected_cash || 0), 0),
+    total_card: shiftsData.reduce((sum, s) => sum + (s.expected_card || 0), 0),
+    total_qr: shiftsData.reduce((sum, s) => sum + (s.expected_qr || 0), 0),
+    total_transfer: shiftsData.reduce((sum, s) => sum + (s.expected_transfer || 0), 0),
+    total_discrepancy_cash: shiftsData.reduce((sum, s) => sum + (s.discrepancy_cash || 0), 0),
+    total_discrepancy_card: shiftsData.reduce((sum, s) => sum + (s.discrepancy_card || 0), 0),
+    total_discrepancy_qr: shiftsData.reduce((sum, s) => sum + (s.discrepancy_qr || 0), 0),
+    total_discrepancy_transfer: shiftsData.reduce((sum, s) => sum + (s.discrepancy_transfer || 0), 0)
+  };
+
   return {
     report_date: date.toISOString().split('T')[0],
     branch_id: branchId,
+    branch: branch ? {
+      name: branch.name,
+      code: branch.code,
+      midday_closing_time: branch.midday_closing_time,
+      evening_closing_time: branch.evening_closing_time,
+      has_shift_change: branch.has_shift_change
+    } : null,
+    shifts: shiftsData,
+    daily_totals: dailyTotals,
     sales: {
       total_count: parseInt(salesData?.toJSON().total_sales) || 0,
       total_revenue: parseFloat(salesData?.toJSON().total_revenue) || 0,
@@ -163,7 +268,7 @@ exports.generateDailyReportData = async (branchId, date) => {
       code: p.payment_method?.code,
       total: parseFloat(p.toJSON().total)
     })),
-    sessions: sessions[0]?.toJSON() || {},
+    sessions: sessionSummary[0]?.toJSON() || {},
     top_products: topProducts.map((p) => ({
       product: p.product?.name,
       sku: p.product?.sku,
@@ -306,6 +411,89 @@ exports.getOwnerDashboard = async (req, res, next) => {
       discrepancies,
       shrinkage,
       top_products: topProducts
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Live Branch Shift Status (Today's shifts for all branches)
+exports.getLiveBranchShiftStatus = async (req, res, next) => {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+
+    // Get all active branches with their shift configuration
+    const branches = await Branch.findAll({
+      where: { is_active: true },
+      attributes: ['id', 'name', 'code', 'midday_closing_time', 'evening_closing_time', 'has_shift_change'],
+      order: [['code', 'ASC']]
+    });
+
+    // Get today's sessions for all branches
+    const branchesWithSessions = await Promise.all(branches.map(async (branch) => {
+      const sessions = await RegisterSession.findAll({
+        where: {
+          branch_id: branch.id,
+          business_date: today
+        },
+        include: [
+          {
+            model: User,
+            as: 'opener',
+            attributes: ['first_name', 'last_name']
+          },
+          {
+            model: User,
+            as: 'closer',
+            attributes: ['first_name', 'last_name']
+          }
+        ],
+        order: [['shift_type', 'ASC']]
+      });
+
+      // Get sales count for each session
+      const sessionsWithSales = await Promise.all(sessions.map(async (session) => {
+        const salesCount = await Sale.count({
+          where: {
+            session_id: session.id,
+            status: 'COMPLETED'
+          }
+        });
+
+        const totalRevenue = await Sale.sum('total_amount', {
+          where: {
+            session_id: session.id,
+            status: 'COMPLETED'
+          }
+        }) || 0;
+
+        return {
+          session_id: session.id,
+          shift_type: session.shift_type,
+          status: session.status,
+          opened_at: session.opened_at,
+          closed_at: session.closed_at,
+          opened_by: session.opener ? `${session.opener.first_name} ${session.opener.last_name}` : null,
+          closed_by: session.closer ? `${session.closer.first_name} ${session.closer.last_name}` : null,
+          sales_count: salesCount,
+          total_revenue: parseFloat(totalRevenue)
+        };
+      }));
+
+      return {
+        branch_id: branch.id,
+        branch_name: branch.name,
+        branch_code: branch.code,
+        midday_closing_time: branch.midday_closing_time,
+        evening_closing_time: branch.evening_closing_time,
+        has_shift_change: branch.has_shift_change,
+        sessions: sessionsWithSales
+      };
+    }));
+
+    return success(res, {
+      date: today,
+      branches: branchesWithSessions
     });
   } catch (error) {
     next(error);

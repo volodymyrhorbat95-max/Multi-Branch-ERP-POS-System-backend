@@ -28,6 +28,16 @@ router.get(
 );
 
 /**
+ * @route   GET /api/v1/reports/live-branch-status
+ * @desc    Get live shift status for all branches (today)
+ * @access  Private (can_view_reports)
+ */
+router.get(
+  '/live-branch-status',
+  reportController.getLiveBranchShiftStatus
+);
+
+/**
  * @route   GET /api/v1/reports/daily-report
  * @desc    Get daily report for a branch
  * @access  Private (can_view_reports)

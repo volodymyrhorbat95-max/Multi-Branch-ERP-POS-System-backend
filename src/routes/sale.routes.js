@@ -79,6 +79,11 @@ router.post(
     body('payments.*.payment_method_id').isUUID(4).withMessage('payment_method_id must be a valid UUID'),
     body('payments.*.amount').isFloat({ min: 0 }).withMessage('amount must be a valid number'),
     body('payments.*.reference_number').optional().isString().isLength({ max: 100 }),
+    body('payments.*.authorization_code').optional().isString().isLength({ max: 50 }),
+    body('payments.*.card_last_four').optional().isString().isLength({ min: 4, max: 4 }),
+    body('payments.*.card_brand').optional().isString().isLength({ max: 20 }),
+    body('payments.*.qr_provider').optional().isString().isLength({ max: 50 }),
+    body('payments.*.qr_transaction_id').optional().isString().isLength({ max: 100 }),
     stringField('local_id', { maxLength: 50, required: false }),
     validate
   ],

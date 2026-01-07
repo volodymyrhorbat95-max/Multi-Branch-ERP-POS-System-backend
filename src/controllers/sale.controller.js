@@ -11,6 +11,8 @@ const { NotFoundError, BusinessError } = require('../middleware/errorHandler');
 const { parsePagination, generateSaleNumber, calculateLoyaltyPoints, formatDecimal } = require('../utils/helpers');
 const { EVENTS } = require('../socket');
 const logger = require('../utils/logger');
+const factuHoyService = require('../services/factuhoy.service');
+const { addInvoiceRetry } = require('../queues/invoiceQueue');
 
 /**
  * Get all sales with filters
@@ -195,6 +197,22 @@ exports.create = async (req, res, next) => {
     // Calculate total
     const totalAmount = subtotal - saleDiscount - pointsValue - (credit_used || 0);
 
+    // Validate payment method requirements
+    for (const payment of payments) {
+      const paymentMethod = await PaymentMethod.findByPk(payment.payment_method_id);
+      if (!paymentMethod) {
+        throw new NotFoundError(`Payment method ${payment.payment_method_id} not found`);
+      }
+
+      // Enforce requires_reference flag
+      if (paymentMethod.requires_reference && !payment.reference_number) {
+        throw new BusinessError(
+          `${paymentMethod.name} requiere un número de comprobante/referencia`,
+          'E408'
+        );
+      }
+    }
+
     // Verify payments cover total
     const totalPaid = payments.reduce((sum, p) => sum + parseFloat(p.amount), 0);
     if (totalPaid < totalAmount) {
@@ -375,6 +393,18 @@ exports.create = async (req, res, next) => {
       ]
     });
 
+    // Automatic invoice generation through FactuHoy (async, don't block response)
+    setImmediate(async () => {
+      try {
+        await generateInvoiceForSale(sale.id, branch_id, customer_id, req.user.id);
+      } catch (error) {
+        logger.error(`Failed to generate invoice for sale ${sale.sale_number}`, {
+          sale_id: sale.id,
+          error: error.message
+        });
+      }
+    });
+
     return created(res, createdSale);
   } catch (error) {
     await t.rollback();
@@ -396,7 +426,13 @@ exports.voidSale = async (req, res, next) => {
     const sale = await Sale.findByPk(id, {
       include: [
         { model: SaleItem, as: 'items' },
-        { model: Branch, as: 'branch' }
+        { model: Branch, as: 'branch' },
+        {
+          model: RegisterSession,
+          as: 'session',
+          attributes: ['id', 'status', 'business_date', 'closed_at']
+        },
+        { model: Invoice, as: 'invoice' }
       ]
     });
 
@@ -406,6 +442,26 @@ exports.voidSale = async (req, res, next) => {
 
     if (sale.status === 'VOIDED') {
       throw new BusinessError('Sale is already voided', 'E404');
+    }
+
+    // CRITICAL: Check if session is still open (cannot void sales from closed shifts)
+    if (sale.session && sale.session.status === 'CLOSED') {
+      throw new BusinessError(
+        'Cannot void sales from closed shifts. Session was closed on ' +
+        new Date(sale.session.closed_at).toLocaleDateString(),
+        'E408'
+      );
+    }
+
+    // CRITICAL: Check if sale is from current business day (same-day void restriction)
+    const currentBusinessDate = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    const saleBusinessDate = sale.session?.business_date || sale.created_at.toISOString().split('T')[0];
+
+    if (saleBusinessDate !== currentBusinessDate) {
+      throw new BusinessError(
+        `Cannot void sales from previous days. Sale is from ${saleBusinessDate}, current business date is ${currentBusinessDate}`,
+        'E409'
+      );
     }
 
     // Check permission - either user has permission or manager authorized
@@ -497,6 +553,47 @@ exports.voidSale = async (req, res, next) => {
           description: `Devolución de puntos canjeados por anulación ${sale.sale_number}`,
           created_by: req.user.id
         }, { transaction: t });
+      }
+    }
+
+    // CRITICAL: Cancel invoice in FactuHoy if already invoiced
+    if (sale.invoice) {
+      const invoice = sale.invoice;
+
+      // Only cancel invoices that are ISSUED (have valid CAE)
+      if (invoice.status === 'ISSUED' && invoice.cae) {
+        logger.info(`Cancelling invoice ${invoice.id} for voided sale ${sale.sale_number}`, {
+          invoice_id: invoice.id,
+          sale_id: sale.id,
+          cae: invoice.cae
+        });
+
+        // Update invoice status to CANCELLED
+        await invoice.update({
+          status: 'CANCELLED',
+          error_message: `Cancelled due to sale void: ${reason}`,
+          updated_at: new Date()
+        }, { transaction: t });
+
+        // Note: Credit note generation in FactuHoy will be handled asynchronously
+        // to avoid blocking the void operation. This is logged for later processing.
+        logger.warn(`Invoice ${invoice.id} with CAE ${invoice.cae} cancelled - Credit note must be generated in FactuHoy`, {
+          invoice_id: invoice.id,
+          sale_number: sale.sale_number,
+          cae: invoice.cae,
+          void_reason: reason
+        });
+
+        // TODO: Implement automatic credit note generation via FactuHoy API
+        // This should be done asynchronously after the void completes
+      } else if (invoice.status === 'PENDING') {
+        // If invoice is still pending, just mark as cancelled
+        await invoice.update({
+          status: 'CANCELLED',
+          error_message: `Cancelled due to sale void: ${reason}`
+        }, { transaction: t });
+
+        logger.info(`Pending invoice ${invoice.id} cancelled for voided sale`);
       }
     }
 
@@ -784,3 +881,188 @@ exports.getSummaryReport = async (req, res, next) => {
     next(error);
   }
 };
+
+/**
+ * Helper function: Generate invoice for sale through FactuHoy
+ * Called asynchronously after sale creation
+ */
+async function generateInvoiceForSale(saleId, branchId, customerId, userId) {
+  try {
+    // Load sale with all details
+    const sale = await Sale.findByPk(saleId, {
+      include: [
+        {
+          model: SaleItem,
+          as: 'items',
+          include: [{ model: Product, as: 'product' }]
+        },
+        { model: Branch, as: 'branch' },
+        { model: Customer, as: 'customer' }
+      ]
+    });
+
+    if (!sale) {
+      throw new Error(`Sale ${saleId} not found`);
+    }
+
+    const branch = sale.branch;
+    const customer = sale.customer;
+
+    // Determine invoice type based on customer and branch tax conditions
+    let invoiceType = 'B'; // Default to B
+    if (customer) {
+      invoiceType = factuHoyService.determineInvoiceType(
+        branch.tax_condition,
+        customer.tax_condition,
+        customer.document_number
+      );
+    }
+
+    // Get invoice type from database
+    const invoiceTypeRecord = await InvoiceType.findOne({
+      where: { code: invoiceType }
+    });
+
+    if (!invoiceTypeRecord) {
+      throw new Error(`Invoice type ${invoiceType} not found in database`);
+    }
+
+    // Get next invoice number for this branch and type
+    const lastInvoice = await Invoice.findOne({
+      where: {
+        point_of_sale: branch.factuhoy_point_of_sale || 1,
+        invoice_type_id: invoiceTypeRecord.id
+      },
+      order: [['invoice_number', 'DESC']]
+    });
+
+    const nextInvoiceNumber = lastInvoice ? lastInvoice.invoice_number + 1 : 1;
+
+    // Calculate net amount (before tax)
+    const totalAmount = parseFloat(sale.total_amount);
+    const taxAmount = parseFloat(sale.tax_amount);
+    const netAmount = totalAmount - taxAmount;
+
+    // Create invoice record with PENDING status
+    const invoice = await Invoice.create({
+      id: uuidv4(),
+      sale_id: saleId,
+      invoice_type_id: invoiceTypeRecord.id,
+      point_of_sale: branch.factuhoy_point_of_sale || 1,
+      invoice_number: nextInvoiceNumber,
+      customer_name: customer ? (customer.company_name || `${customer.first_name} ${customer.last_name}`) : 'Consumidor Final',
+      customer_document_type: customer?.document_type || 'DNI',
+      customer_document_number: customer?.document_number || null,
+      customer_tax_condition: customer?.tax_condition || 'CONSUMIDOR_FINAL',
+      customer_address: customer?.address || null,
+      net_amount: netAmount,
+      tax_amount: taxAmount,
+      total_amount: totalAmount,
+      status: 'PENDING',
+      retry_count: 0
+    });
+
+    logger.info(`Invoice ${invoice.id} created for sale ${sale.sale_number}`, {
+      invoice_id: invoice.id,
+      sale_id: saleId,
+      invoice_type: invoiceType,
+      status: 'PENDING'
+    });
+
+    // Prepare data for FactuHoy
+    const invoiceData = {
+      invoice_type: invoiceType,
+      point_of_sale: branch.factuhoy_point_of_sale || 1,
+      customer: customer ? {
+        name: customer.company_name || `${customer.first_name} ${customer.last_name}`,
+        document_type: customer.document_type,
+        document_number: customer.document_number,
+        tax_condition: customer.tax_condition,
+        address: customer.address
+      } : {
+        name: 'Consumidor Final',
+        document_type: 'DNI',
+        document_number: '0',
+        tax_condition: 'CONSUMIDOR_FINAL',
+        address: ''
+      },
+      items: sale.items.map(item => ({
+        description: item.product_name,
+        quantity: parseFloat(item.quantity),
+        unit_price: parseFloat(item.unit_price),
+        tax_rate: parseFloat(item.tax_rate) || 21,
+        total: parseFloat(item.total)
+      })),
+      totals: {
+        subtotal: netAmount,
+        tax_21: taxAmount, // Simplified - assuming all tax is 21%
+        tax_10_5: 0,
+        tax_27: 0,
+        total: totalAmount
+      },
+      branch: branch
+    };
+
+    // Call FactuHoy API
+    const result = await factuHoyService.createInvoice(invoiceData);
+
+    if (result.success) {
+      // Update invoice with CAE and success status
+      await invoice.update({
+        cae: result.cae,
+        cae_expiration_date: result.cae_expiration,
+        factuhoy_id: result.invoice_number?.toString() || null,
+        factuhoy_response: result.afip_response,
+        pdf_url: result.afip_response?.pdf_url || null,
+        status: 'ISSUED',
+        issued_at: new Date(),
+        error_message: null
+      });
+
+      logger.info(`Invoice ${invoice.id} issued successfully - CAE: ${result.cae}`, {
+        invoice_id: invoice.id,
+        sale_id: saleId,
+        cae: result.cae
+      });
+    } else {
+      // Update invoice with error status
+      await invoice.update({
+        status: result.retryable ? 'PENDING' : 'FAILED',
+        error_message: result.error,
+        factuhoy_response: result.afip_response,
+        retry_count: result.retryable ? invoice.retry_count + 1 : invoice.retry_count,
+        last_retry_at: new Date()
+      });
+
+      logger.error(`Invoice ${invoice.id} failed - ${result.error}`, {
+        invoice_id: invoice.id,
+        sale_id: saleId,
+        error: result.error,
+        retryable: result.retryable
+      });
+
+      // Add to retry queue if retryable
+      if (result.retryable) {
+        try {
+          await addInvoiceRetry(invoice.id, 60000); // Retry in 1 minute
+          logger.info(`Invoice ${invoice.id} added to retry queue`);
+        } catch (queueError) {
+          logger.error(`Failed to add invoice ${invoice.id} to retry queue`, {
+            error: queueError.message
+          });
+        }
+      } else {
+        logger.warn(`Invoice ${invoice.id} marked as FAILED - manual intervention required`);
+      }
+    }
+
+    return invoice;
+  } catch (error) {
+    logger.error(`Error generating invoice for sale ${saleId}`, {
+      sale_id: saleId,
+      error: error.message,
+      stack: error.stack
+    });
+    throw error;
+  }
+}
