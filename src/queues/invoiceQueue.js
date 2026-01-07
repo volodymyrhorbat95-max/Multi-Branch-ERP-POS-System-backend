@@ -4,11 +4,15 @@ const logger = require('../utils/logger');
 // Create invoice retry queue
 let invoiceQueue;
 try {
+  const redisConfig = process.env.REDIS_URL
+    ? process.env.REDIS_URL // Railway provides full URL
+    : {
+        host: process.env.REDIS_HOST || '127.0.0.1',
+        port: process.env.REDIS_PORT || 6379,
+      };
+
   invoiceQueue = new Queue('invoice-retry', {
-    redis: {
-      host: process.env.REDIS_HOST || '127.0.0.1',
-      port: process.env.REDIS_PORT || 6379,
-    },
+    redis: redisConfig,
     defaultJobOptions: {
       attempts: 5, // Retry up to 5 times
       backoff: {
@@ -19,8 +23,10 @@ try {
       removeOnFail: false, // Keep failed jobs for investigation
     },
   });
+
+  logger.info('Invoice queue initialized successfully');
 } catch (error) {
-  logger.warn('Redis not available. Invoice queue disabled. This is OK for development.');
+  logger.warn('Redis not available. Invoice queue disabled. Error: ' + error.message);
   invoiceQueue = null;
 }
 
@@ -91,6 +97,11 @@ const addInvoiceRetry = async (invoiceId, delay = 0) => {
  * @param {string} invoiceId - Invoice ID to remove
  */
 const removeInvoiceRetry = async (invoiceId) => {
+  if (!invoiceQueue) {
+    logger.debug(`Invoice queue not available. Skipping removal of invoice ${invoiceId}`);
+    return;
+  }
+
   try {
     const jobId = `invoice-${invoiceId}`;
     const job = await invoiceQueue.getJob(jobId);
@@ -110,6 +121,10 @@ const removeInvoiceRetry = async (invoiceId) => {
  * Get queue stats
  */
 const getQueueStats = async () => {
+  if (!invoiceQueue) {
+    return null;
+  }
+
   try {
     const [waiting, active, completed, failed, delayed] = await Promise.all([
       invoiceQueue.getWaitingCount(),
@@ -137,6 +152,11 @@ const getQueueStats = async () => {
  * Clean old completed jobs
  */
 const cleanQueue = async () => {
+  if (!invoiceQueue) {
+    logger.debug('Invoice queue not available. Skipping queue cleanup.');
+    return;
+  }
+
   try {
     await invoiceQueue.clean(24 * 60 * 60 * 1000); // Clean jobs older than 24 hours
     logger.info('Invoice queue cleaned');

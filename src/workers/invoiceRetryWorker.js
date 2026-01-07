@@ -6,7 +6,8 @@ const logger = require('../utils/logger');
 /**
  * Process invoice retry jobs
  */
-invoiceQueue.process(async (job) => {
+if (invoiceQueue) {
+  invoiceQueue.process(async (job) => {
   const { invoice_id } = job.data;
 
   logger.info(`Processing invoice retry job for invoice ${invoice_id}`, {
@@ -158,7 +159,10 @@ invoiceQueue.process(async (job) => {
     // Re-throw to let Bull handle the retry
     throw error;
   }
-});
+  });
+} else {
+  logger.warn('Invoice queue not available. Invoice retry worker disabled.');
+}
 
 /**
  * Scheduled task: Check for stuck PENDING invoices and add them to retry queue
@@ -166,6 +170,11 @@ invoiceQueue.process(async (job) => {
  */
 const checkStuckInvoices = async () => {
   try {
+    if (!invoiceQueue) {
+      logger.debug('Invoice queue not available. Skipping stuck invoices check.');
+      return 0;
+    }
+
     logger.info('Checking for stuck pending invoices...');
 
     // Find invoices that are PENDING and haven't been retried in the last hour
