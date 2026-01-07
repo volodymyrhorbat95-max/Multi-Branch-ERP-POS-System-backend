@@ -128,20 +128,20 @@ exports.login = async (req, res, next) => {
 
     // Build permissions object
     const permissions = {
-      canVoidSale: user.role.can_void_sale,
-      canGiveDiscount: user.role.can_give_discount,
-      canViewAllBranches: user.role.can_view_all_branches,
-      canCloseRegister: user.role.can_close_register,
-      canReopenClosing: user.role.can_reopen_closing,
-      canAdjustStock: user.role.can_adjust_stock,
-      canImportPrices: user.role.can_import_prices,
-      canManageUsers: user.role.can_manage_users,
-      canViewReports: user.role.can_view_reports,
-      canViewFinancials: user.role.can_view_financials,
-      canManageSuppliers: user.role.can_manage_suppliers,
-      canManageProducts: user.role.can_manage_products,
-      canIssueInvoiceA: user.role.can_issue_invoice_a,
-      maxDiscountPercent: parseFloat(user.role.max_discount_percent)
+      canVoidSale: user.role.can_void_sale || false,
+      canGiveDiscount: user.role.can_give_discount || false,
+      canViewAllBranches: user.role.can_view_all_branches || false,
+      canCloseRegister: user.role.can_close_register || false,
+      canReopenClosing: user.role.can_reopen_closing || false,
+      canAdjustStock: user.role.can_adjust_stock || false,
+      canImportPrices: user.role.can_import_prices || false,
+      canManageUsers: user.role.can_manage_users || false,
+      canViewReports: user.role.can_view_reports || false,
+      canViewFinancials: user.role.can_view_financials || false,
+      canManageSuppliers: user.role.can_manage_suppliers || false,
+      canManageProducts: user.role.can_manage_products || false,
+      canIssueInvoiceA: user.role.can_issue_invoice_a || false,
+      maxDiscountPercent: user.role.max_discount_percent ? parseFloat(user.role.max_discount_percent) : 0
     };
 
     // Get user branches
@@ -159,7 +159,7 @@ exports.login = async (req, res, next) => {
         phone: user.phone,
         role: user.role,
         primary_branch: user.primary_branch,
-        branches: userWithBranches.branches,
+        branches: userWithBranches?.branches || [],
         language: user.language,
         permissions
       },
@@ -218,10 +218,10 @@ exports.pinLogin = async (req, res, next) => {
 
     // Build permissions
     const permissions = {
-      canVoidSale: user.role.can_void_sale,
-      canGiveDiscount: user.role.can_give_discount,
-      canCloseRegister: user.role.can_close_register,
-      maxDiscountPercent: parseFloat(user.role.max_discount_percent)
+      canVoidSale: user.role.can_void_sale || false,
+      canGiveDiscount: user.role.can_give_discount || false,
+      canCloseRegister: user.role.can_close_register || false,
+      maxDiscountPercent: user.role.max_discount_percent ? parseFloat(user.role.max_discount_percent) : 0
     };
 
     return success(res, {
