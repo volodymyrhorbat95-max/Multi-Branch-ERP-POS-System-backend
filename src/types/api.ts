@@ -98,7 +98,6 @@ export interface HealthCheckResponse {
   version: string;
   environment: string;
   database: 'connected' | 'disconnected';
-  redis?: 'connected' | 'disconnected';
   uptime: number;
   timestamp: ISODateString;
 }

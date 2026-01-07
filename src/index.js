@@ -12,10 +12,6 @@ const routes = require('./routes');
 const errorHandler = require('./middleware/errorHandler');
 const { setupSocketIO } = require('./socket');
 const logger = require('./utils/logger');
-const { initInvoiceScheduler } = require('./scheduler/invoiceScheduler');
-
-// Initialize invoice retry worker (starts processing queue)
-require('./workers/invoiceRetryWorker');
 
 const app = express();
 const httpServer = createServer(app);
@@ -80,9 +76,6 @@ const startServer = async () => {
     // Test database connection
     await sequelize.authenticate();
     logger.info('Database connection established successfully');
-
-    // Initialize invoice scheduler
-    initInvoiceScheduler();
 
     // Start HTTP server
     httpServer.listen(PORT, () => {

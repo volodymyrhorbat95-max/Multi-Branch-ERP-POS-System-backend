@@ -12,7 +12,6 @@ const { parsePagination, generateSaleNumber, calculateLoyaltyPoints, formatDecim
 const { EVENTS } = require('../socket');
 const logger = require('../utils/logger');
 const factuHoyService = require('../services/factuhoy.service');
-const { addInvoiceRetry } = require('../queues/invoiceQueue');
 
 /**
  * Get all sales with filters
@@ -1041,16 +1040,9 @@ async function generateInvoiceForSale(saleId, branchId, customerId, userId) {
         retryable: result.retryable
       });
 
-      // Add to retry queue if retryable
+      // Log the error - invoice will remain in PENDING status for manual retry
       if (result.retryable) {
-        try {
-          await addInvoiceRetry(invoice.id, 60000); // Retry in 1 minute
-          logger.info(`Invoice ${invoice.id} added to retry queue`);
-        } catch (queueError) {
-          logger.error(`Failed to add invoice ${invoice.id} to retry queue`, {
-            error: queueError.message
-          });
-        }
+        logger.info(`Invoice ${invoice.id} can be retried manually - marked as PENDING`);
       } else {
         logger.warn(`Invoice ${invoice.id} marked as FAILED - manual intervention required`);
       }
