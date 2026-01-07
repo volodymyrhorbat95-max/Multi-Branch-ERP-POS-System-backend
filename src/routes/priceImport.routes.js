@@ -1,7 +1,5 @@
 const express = require('express');
 const router = express.Router();
-const multer = require('multer');
-const path = require('path');
 const priceImportController = require('../controllers/priceImport.controller');
 const { authenticate, requirePermission } = require('../middleware/auth');
 const {
@@ -9,7 +7,6 @@ const {
   uuidParam,
   uuidField,
   stringField,
-  decimalField,
   booleanField,
   enumField,
   paginationQuery,
@@ -17,51 +14,22 @@ const {
   body
 } = require('../middleware/validate');
 
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, path.join(__dirname, '../../uploads/price-imports'));
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1E9)}`;
-    cb(null, `${uniqueSuffix}-${file.originalname}`);
-  }
-});
-
-const fileFilter = (req, file, cb) => {
-  const allowedTypes = [
-    'application/pdf',
-    'application/vnd.ms-excel',
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    'text/csv'
-  ];
-
-  if (allowedTypes.includes(file.mimetype)) {
-    cb(null, true);
-  } else {
-    cb(new Error('Invalid file type. Only PDF, Excel, and CSV files are allowed.'), false);
-  }
-};
-
-const upload = multer({
-  storage,
-  fileFilter,
-  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
-});
-
 // All routes require authentication
 router.use(authenticate);
 
 /**
  * @route   POST /api/v1/prices/upload
- * @desc    Upload price list file for processing
+ * @desc    Process price list file from Cloudinary URL
  * @access  Private (can_import_prices)
  */
 router.post(
   '/upload',
   requirePermission('canImportPrices'),
-  upload.single('file'),
   [
+    stringField('file_url', { required: true, maxLength: 500 }),
+    stringField('file_name', { required: true, maxLength: 255 }),
+    enumField('file_type', ['PDF', 'EXCEL', 'CSV'], { required: true }),
+    body('file_size_bytes').isInt({ min: 0 }),
     body('supplier_id').optional().isUUID(4),
     body('margin_percentage').optional().isFloat({ min: 0, max: 500 }),
     body('rounding_rule').optional().isIn(['NONE', 'UP', 'DOWN', 'NEAREST']),

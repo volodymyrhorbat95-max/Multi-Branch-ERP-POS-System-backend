@@ -2,6 +2,8 @@ const { Op } = require('sequelize');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const fs = require('fs').promises;
+const axios = require('axios');
+const os = require('os');
 const {
   PriceImportBatch, PriceImportItem, Product, Supplier, ProductPriceHistory,
   sequelize
@@ -24,6 +26,22 @@ const extractTextFromFile = async (filePath, fileType) => {
   return { success: true, text: '', items: [] };
 };
 
+// Download file from Cloudinary URL to temp location
+const downloadFileFromCloudinary = async (fileUrl) => {
+  const response = await axios({
+    method: 'GET',
+    url: fileUrl,
+    responseType: 'arraybuffer'
+  });
+
+  const tempDir = os.tmpdir();
+  const tempFileName = `price-import-${uuidv4()}${path.extname(fileUrl.split('?')[0])}`;
+  const tempFilePath = path.join(tempDir, tempFileName);
+
+  await fs.writeFile(tempFilePath, response.data);
+  return tempFilePath;
+};
+
 // Excel parsing
 const parseExcelFile = async (filePath) => {
   const xlsx = require('xlsx');
@@ -42,28 +60,35 @@ const parseExcelFile = async (filePath) => {
 
 exports.uploadFile = async (req, res, next) => {
   const t = await sequelize.transaction();
+  let tempFilePath = null;
+
   try {
-    if (!req.file) {
-      throw new ValidationError('No file uploaded');
+    const {
+      file_url,
+      file_name,
+      file_type,
+      file_size_bytes,
+      supplier_id,
+      margin_percentage,
+      rounding_rule,
+      rounding_value
+    } = req.body;
+
+    if (!file_url) {
+      throw new ValidationError('file_url is required');
     }
 
-    const { supplier_id, margin_percentage, rounding_rule, rounding_value } = req.body;
-    const file = req.file;
-    const ext = path.extname(file.originalname).toLowerCase();
-
-    let fileType;
-    if (ext === '.pdf') fileType = 'PDF';
-    else if (['.xls', '.xlsx'].includes(ext)) fileType = 'EXCEL';
-    else if (ext === '.csv') fileType = 'CSV';
-    else throw new ValidationError('Unsupported file type. Use PDF, Excel, or CSV');
+    // Download file from Cloudinary to temporary location
+    tempFilePath = await downloadFileFromCloudinary(file_url);
 
     // Create batch record
     const batch = await PriceImportBatch.create({
       id: uuidv4(),
       supplier_id: supplier_id || null,
-      file_name: file.originalname,
-      file_path: file.path,
-      file_type: fileType,
+      file_name,
+      file_url,
+      file_type,
+      file_size_bytes: parseInt(file_size_bytes) || 0,
       status: 'PROCESSING',
       margin_percentage: parseFloat(margin_percentage) || 30,
       rounding_rule: rounding_rule || 'NEAREST',
@@ -74,10 +99,10 @@ exports.uploadFile = async (req, res, next) => {
     // Extract items from file
     let extractedItems = [];
 
-    if (fileType === 'EXCEL' || fileType === 'CSV') {
-      extractedItems = await parseExcelFile(file.path);
-    } else if (fileType === 'PDF') {
-      const ocrResult = await extractTextFromFile(file.path, 'PDF');
+    if (file_type === 'EXCEL' || file_type === 'CSV') {
+      extractedItems = await parseExcelFile(tempFilePath);
+    } else if (file_type === 'PDF') {
+      const ocrResult = await extractTextFromFile(tempFilePath, 'PDF');
       extractedItems = ocrResult.items || [];
     }
 
@@ -179,6 +204,15 @@ exports.uploadFile = async (req, res, next) => {
 
     await t.commit();
 
+    // Clean up temporary file
+    if (tempFilePath) {
+      try {
+        await fs.unlink(tempFilePath);
+      } catch (err) {
+        console.error('Failed to delete temp file:', err);
+      }
+    }
+
     const result = await PriceImportBatch.findByPk(batch.id, {
       include: [{ model: Supplier, as: 'supplier', attributes: ['name', 'code'] }]
     });
@@ -186,6 +220,16 @@ exports.uploadFile = async (req, res, next) => {
     return created(res, result);
   } catch (error) {
     await t.rollback();
+
+    // Clean up temporary file on error
+    if (tempFilePath) {
+      try {
+        await fs.unlink(tempFilePath);
+      } catch (err) {
+        console.error('Failed to delete temp file:', err);
+      }
+    }
+
     next(error);
   }
 };
