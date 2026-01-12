@@ -2,13 +2,33 @@ const { Op } = require('sequelize');
 const { v4: uuidv4 } = require('uuid');
 const {
   CashRegister, RegisterSession, Branch, User, Sale, SalePayment,
-  PaymentMethod, DailyReport, Alert, sequelize
+  PaymentMethod, DailyReport, Alert, CashWithdrawal, sequelize
 } = require('../database/models');
 const { success, created, paginated } = require('../utils/apiResponse');
 const { NotFoundError, BusinessError } = require('../middleware/errorHandler');
 const { parsePagination, generateSessionNumber, getBusinessDate, isPastClosingTime, formatDecimal } = require('../utils/helpers');
 const { EVENTS } = require('../socket');
 const logger = require('../utils/logger');
+
+// ===== Helper Functions =====
+
+/**
+ * Calculate total from denomination breakdown
+ */
+const calculateDenominationTotal = (denominations) => {
+  if (!denominations) return 0;
+
+  return (
+    (denominations.bills_1000 || 0) * 1000 +
+    (denominations.bills_500 || 0) * 500 +
+    (denominations.bills_200 || 0) * 200 +
+    (denominations.bills_100 || 0) * 100 +
+    (denominations.bills_50 || 0) * 50 +
+    (denominations.bills_20 || 0) * 20 +
+    (denominations.bills_10 || 0) * 10 +
+    parseFloat(denominations.coins || 0)
+  );
+};
 
 // ===== Cash Register Controllers =====
 
@@ -179,7 +199,7 @@ exports.getCurrentSession = async (req, res, next) => {
 exports.openSession = async (req, res, next) => {
   try {
     const { registerId } = req.params;
-    const { shift_type, opening_cash, opening_notes, local_id } = req.body;
+    const { shift_type, opening_cash, opening_notes, opening_denominations, local_id } = req.body;
 
     // Check register exists
     const register = await CashRegister.findByPk(registerId, {
@@ -199,6 +219,17 @@ exports.openSession = async (req, res, next) => {
       throw new BusinessError('Register already has an open session', 'E401');
     }
 
+    // Validate denomination breakdown matches total
+    if (opening_denominations) {
+      const denominationTotal = calculateDenominationTotal(opening_denominations);
+      if (Math.abs(denominationTotal - opening_cash) > 0.01) {
+        throw new BusinessError(
+          `Denomination breakdown (${formatDecimal(denominationTotal)}) does not match opening cash total (${formatDecimal(opening_cash)})`,
+          'E403'
+        );
+      }
+    }
+
     const businessDate = getBusinessDate();
 
     const session = await RegisterSession.create({
@@ -212,6 +243,15 @@ exports.openSession = async (req, res, next) => {
       opened_at: new Date(),
       opening_cash,
       opening_notes,
+      // Denomination breakdown
+      opening_bills_1000: opening_denominations?.bills_1000 || 0,
+      opening_bills_500: opening_denominations?.bills_500 || 0,
+      opening_bills_200: opening_denominations?.bills_200 || 0,
+      opening_bills_100: opening_denominations?.bills_100 || 0,
+      opening_bills_50: opening_denominations?.bills_50 || 0,
+      opening_bills_20: opening_denominations?.bills_20 || 0,
+      opening_bills_10: opening_denominations?.bills_10 || 0,
+      opening_coins: opening_denominations?.coins || 0,
       status: 'OPEN',
       local_id,
       synced_at: new Date()
@@ -243,7 +283,14 @@ exports.closeSession = async (req, res, next) => {
 
   try {
     const { sessionId } = req.params;
-    const { declared_cash, declared_card, declared_qr, declared_transfer, closing_notes } = req.body;
+    const {
+      declared_cash,
+      declared_card,
+      declared_qr,
+      declared_transfer,
+      closing_notes,
+      closing_denominations
+    } = req.body;
 
     const session = await RegisterSession.findByPk(sessionId, {
       include: [
@@ -260,6 +307,17 @@ exports.closeSession = async (req, res, next) => {
       throw new BusinessError('Session is not open', 'E402');
     }
 
+    // Validate closing denomination breakdown matches declared cash
+    if (closing_denominations) {
+      const denominationTotal = calculateDenominationTotal(closing_denominations);
+      if (Math.abs(denominationTotal - declared_cash) > 0.01) {
+        throw new BusinessError(
+          `Closing denomination breakdown (${formatDecimal(denominationTotal)}) does not match declared cash (${formatDecimal(declared_cash)})`,
+          'E404'
+        );
+      }
+    }
+
     // Calculate expected amounts from sales
     const sales = await Sale.findAll({
       where: { session_id: sessionId, status: 'COMPLETED' },
@@ -269,6 +327,12 @@ exports.closeSession = async (req, res, next) => {
         include: [{ model: PaymentMethod, as: 'payment_method' }]
       }]
     });
+
+    // Get withdrawals for this session
+    const withdrawals = await CashWithdrawal.findAll({
+      where: { session_id: sessionId }
+    });
+    const totalWithdrawals = withdrawals.reduce((sum, w) => sum + parseFloat(w.amount), 0);
 
     // Initialize expected amounts with opening cash
     let expected_cash = parseFloat(session.opening_cash);
@@ -300,6 +364,9 @@ exports.closeSession = async (req, res, next) => {
       }
     }
 
+    // Subtract withdrawals from expected cash
+    expected_cash -= totalWithdrawals;
+
     // Calculate discrepancies
     const discrepancy_cash = declared_cash - expected_cash;
     const discrepancy_card = declared_card - expected_card;
@@ -324,6 +391,15 @@ exports.closeSession = async (req, res, next) => {
       discrepancy_qr,
       discrepancy_transfer,
       total_discrepancy,
+      // Closing denomination breakdown
+      closing_bills_1000: closing_denominations?.bills_1000 || null,
+      closing_bills_500: closing_denominations?.bills_500 || null,
+      closing_bills_200: closing_denominations?.bills_200 || null,
+      closing_bills_100: closing_denominations?.bills_100 || null,
+      closing_bills_50: closing_denominations?.bills_50 || null,
+      closing_bills_20: closing_denominations?.bills_20 || null,
+      closing_bills_10: closing_denominations?.bills_10 || null,
+      closing_coins: closing_denominations?.coins || null,
       status: 'CLOSED',
       closing_notes
     }, { transaction: t });
@@ -353,6 +429,34 @@ exports.closeSession = async (req, res, next) => {
     }, { transaction: t });
 
     await t.commit();
+
+    // Check petty cash fund - alert if cash is below petty cash amount
+    const pettyCashAmount = parseFloat(session.branch.petty_cash_amount || 0);
+    if (pettyCashAmount > 0 && expected_cash < pettyCashAmount) {
+      await Alert.create({
+        id: uuidv4(),
+        alert_type: 'LOW_PETTY_CASH',
+        severity: 'HIGH',
+        branch_id: session.branch_id,
+        user_id: req.user.id,
+        title: 'Fondo de caja bajo',
+        message: `Efectivo en caja ($${formatDecimal(expected_cash)}) está por debajo del fondo de caja configurado ($${formatDecimal(pettyCashAmount)}). Retiros totales: $${formatDecimal(totalWithdrawals)}`,
+        reference_type: 'SESSION',
+        reference_id: session.id
+      });
+
+      // Emit alert to owners
+      const io = req.app.get('io');
+      if (io) {
+        io.emitToOwners(EVENTS.ALERT_CREATED, {
+          type: 'LOW_PETTY_CASH',
+          severity: 'HIGH',
+          branch_name: session.branch.name,
+          current_cash: expected_cash,
+          petty_cash_amount: pettyCashAmount
+        }, session.branch_id);
+      }
+    }
 
     // Create alert if significant discrepancy
     if (Math.abs(total_discrepancy) > 100) {

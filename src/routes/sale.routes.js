@@ -66,6 +66,8 @@ router.post(
     uuidField('seller_id', false),
     decimalField('discount_percent', { min: 0, max: 100, required: false }),
     decimalField('discount_amount', { min: 0, required: false }),
+    enumField('discount_type', ['PERCENT', 'FIXED'], false),
+    decimalField('discount_value', { min: 0, required: false }),
     integerField('points_redeemed', { min: 0, required: false }),
     decimalField('credit_used', { min: 0, required: false }),
     decimalField('change_as_credit', { min: 0, required: false }),

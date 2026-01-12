@@ -219,11 +219,12 @@ exports.updatePrices = async (req, res, next) => {
     await ProductPriceHistory.create({
       id: uuidv4(),
       product_id: product.id,
-      cost_price: product.cost_price,
-      selling_price: product.selling_price,
-      margin_percent: product.margin_percent,
-      changed_by: req.user.id,
-      change_reason: reason
+      old_cost_price: product.cost_price,
+      new_cost_price: cost_price || product.cost_price,
+      old_selling_price: product.selling_price,
+      new_selling_price: selling_price || product.selling_price,
+      change_reason: 'MANUAL',
+      changed_by: req.user.id
     }, { transaction: t });
 
     // Update product
@@ -241,6 +242,197 @@ exports.updatePrices = async (req, res, next) => {
 
     await t.commit();
     return success(res, product);
+  } catch (error) {
+    await t.rollback();
+    next(error);
+  }
+};
+
+// Bulk price update by margin percentage
+exports.bulkUpdateByMargin = async (req, res, next) => {
+  const t = await sequelize.transaction();
+  try {
+    const {
+      product_ids,
+      category_id,
+      supplier_id,
+      margin_percentage,
+      rounding_rule,
+      rounding_value
+    } = req.body;
+
+    // Build where clause
+    const where = { is_active: true };
+    if (product_ids && product_ids.length > 0) {
+      where.id = { [Op.in]: product_ids };
+    }
+    if (category_id) {
+      where.category_id = category_id;
+    }
+
+    // Fetch products
+    const products = await Product.findAll({ where });
+
+    if (products.length === 0) {
+      return success(res, { updated_count: 0, products: [] });
+    }
+
+    let updatedCount = 0;
+    const updatedProducts = [];
+
+    for (const product of products) {
+      const costPrice = parseFloat(product.cost_price) || 0;
+      if (costPrice <= 0) continue;
+
+      // Calculate new selling price
+      const marginMultiplier = 1 + (parseFloat(margin_percentage) / 100);
+      let newSellingPrice = costPrice * marginMultiplier;
+
+      // Apply rounding
+      if (rounding_rule && rounding_value > 0) {
+        const rv = parseInt(rounding_value);
+        if (rounding_rule === 'UP') {
+          newSellingPrice = Math.ceil(newSellingPrice / rv) * rv;
+        } else if (rounding_rule === 'DOWN') {
+          newSellingPrice = Math.floor(newSellingPrice / rv) * rv;
+        } else if (rounding_rule === 'NEAREST') {
+          newSellingPrice = Math.round(newSellingPrice / rv) * rv;
+        }
+      }
+
+      // Record price history
+      await ProductPriceHistory.create({
+        id: uuidv4(),
+        product_id: product.id,
+        old_cost_price: product.cost_price,
+        new_cost_price: product.cost_price,
+        old_selling_price: product.selling_price,
+        new_selling_price: newSellingPrice,
+        change_reason: 'BULK_UPDATE',
+        changed_by: req.user.id
+      }, { transaction: t });
+
+      // Update product
+      await product.update({
+        selling_price: newSellingPrice,
+        margin_percent: margin_percentage
+      }, { transaction: t });
+
+      updatedCount++;
+      updatedProducts.push({
+        id: product.id,
+        name: product.name,
+        sku: product.sku,
+        old_price: product.selling_price,
+        new_price: newSellingPrice
+      });
+    }
+
+    await t.commit();
+
+    return success(res, {
+      updated_count: updatedCount,
+      products: updatedProducts
+    });
+  } catch (error) {
+    await t.rollback();
+    next(error);
+  }
+};
+
+// Bulk price update by supplier
+exports.bulkUpdateBySupplier = async (req, res, next) => {
+  const t = await sequelize.transaction();
+  try {
+    const {
+      supplier_id,
+      margin_percentage,
+      rounding_rule,
+      rounding_value,
+      update_cost_prices
+    } = req.body;
+
+    const { SupplierProduct } = require('../database/models');
+
+    // Get all products from this supplier
+    const supplierProducts = await SupplierProduct.findAll({
+      where: { supplier_id },
+      include: [{ model: Product, as: 'product', where: { is_active: true } }]
+    });
+
+    if (supplierProducts.length === 0) {
+      return success(res, { updated_count: 0, products: [] });
+    }
+
+    let updatedCount = 0;
+    const updatedProducts = [];
+
+    for (const sp of supplierProducts) {
+      const product = sp.product;
+
+      // Optionally update cost price from supplier
+      let costPrice = parseFloat(product.cost_price) || 0;
+      if (update_cost_prices && sp.last_cost_price) {
+        costPrice = parseFloat(sp.last_cost_price);
+      }
+
+      if (costPrice <= 0) continue;
+
+      // Calculate new selling price
+      const marginMultiplier = 1 + (parseFloat(margin_percentage) / 100);
+      let newSellingPrice = costPrice * marginMultiplier;
+
+      // Apply rounding
+      if (rounding_rule && rounding_value > 0) {
+        const rv = parseInt(rounding_value);
+        if (rounding_rule === 'UP') {
+          newSellingPrice = Math.ceil(newSellingPrice / rv) * rv;
+        } else if (rounding_rule === 'DOWN') {
+          newSellingPrice = Math.floor(newSellingPrice / rv) * rv;
+        } else if (rounding_rule === 'NEAREST') {
+          newSellingPrice = Math.round(newSellingPrice / rv) * rv;
+        }
+      }
+
+      // Record price history
+      await ProductPriceHistory.create({
+        id: uuidv4(),
+        product_id: product.id,
+        old_cost_price: product.cost_price,
+        new_cost_price: update_cost_prices ? costPrice : product.cost_price,
+        old_selling_price: product.selling_price,
+        new_selling_price: newSellingPrice,
+        change_reason: 'BULK_UPDATE',
+        changed_by: req.user.id
+      }, { transaction: t });
+
+      // Update product
+      const updateData = {
+        selling_price: newSellingPrice,
+        margin_percent: margin_percentage
+      };
+      if (update_cost_prices) {
+        updateData.cost_price = costPrice;
+      }
+
+      await product.update(updateData, { transaction: t });
+
+      updatedCount++;
+      updatedProducts.push({
+        id: product.id,
+        name: product.name,
+        sku: product.sku,
+        old_price: product.selling_price,
+        new_price: newSellingPrice
+      });
+    }
+
+    await t.commit();
+
+    return success(res, {
+      updated_count: updatedCount,
+      products: updatedProducts
+    });
   } catch (error) {
     await t.rollback();
     next(error);

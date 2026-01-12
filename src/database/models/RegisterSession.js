@@ -57,6 +57,55 @@ module.exports = (sequelize) => {
       type: DataTypes.TEXT,
       allowNull: true
     },
+    // Opening bill denomination breakdown
+    opening_bills_1000: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      comment: 'Quantity of $1000 bills at opening'
+    },
+    opening_bills_500: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      comment: 'Quantity of $500 bills at opening'
+    },
+    opening_bills_200: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      comment: 'Quantity of $200 bills at opening'
+    },
+    opening_bills_100: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      comment: 'Quantity of $100 bills at opening'
+    },
+    opening_bills_50: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      comment: 'Quantity of $50 bills at opening'
+    },
+    opening_bills_20: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      comment: 'Quantity of $20 bills at opening'
+    },
+    opening_bills_10: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      comment: 'Quantity of $10 bills at opening'
+    },
+    opening_coins: {
+      type: DataTypes.DECIMAL(12, 2),
+      allowNull: false,
+      defaultValue: 0,
+      comment: 'Total amount in coins at opening'
+    },
     // Closing (Blind Closing)
     closed_by: {
       type: DataTypes.UUID,
@@ -86,6 +135,47 @@ module.exports = (sequelize) => {
     declared_transfer: {
       type: DataTypes.DECIMAL(12, 2),
       allowNull: true
+    },
+    // Closing bill denomination breakdown
+    closing_bills_1000: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      comment: 'Quantity of $1000 bills at closing'
+    },
+    closing_bills_500: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      comment: 'Quantity of $500 bills at closing'
+    },
+    closing_bills_200: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      comment: 'Quantity of $200 bills at closing'
+    },
+    closing_bills_100: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      comment: 'Quantity of $100 bills at closing'
+    },
+    closing_bills_50: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      comment: 'Quantity of $50 bills at closing'
+    },
+    closing_bills_20: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      comment: 'Quantity of $20 bills at closing'
+    },
+    closing_bills_10: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      comment: 'Quantity of $10 bills at closing'
+    },
+    closing_coins: {
+      type: DataTypes.DECIMAL(12, 2),
+      allowNull: true,
+      comment: 'Total amount in coins at closing'
     },
     // System calculated amounts
     expected_cash: {
@@ -182,6 +272,7 @@ module.exports = (sequelize) => {
     RegisterSession.belongsTo(models.User, { foreignKey: 'closed_by', as: 'closer' });
     RegisterSession.belongsTo(models.User, { foreignKey: 'reopened_by', as: 'reopener' });
     RegisterSession.hasMany(models.Sale, { foreignKey: 'session_id', as: 'sales' });
+    RegisterSession.hasMany(models.CashWithdrawal, { foreignKey: 'session_id', as: 'withdrawals' });
   };
 
   return RegisterSession;

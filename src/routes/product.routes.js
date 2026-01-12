@@ -195,4 +195,42 @@ router.put(
   productController.updatePrices
 );
 
+/**
+ * @route   POST /api/v1/products/bulk-update-margin
+ * @desc    Bulk update product prices by margin percentage
+ * @access  Private (can_manage_products)
+ */
+router.post(
+  '/bulk-update-margin',
+  requirePermission('canManageProducts'),
+  [
+    query('product_ids').optional().isArray(),
+    query('category_id').optional().isUUID(4),
+    decimalField('margin_percentage', { min: 0, max: 500 }),
+    stringField('rounding_rule', { required: false }),
+    integerField('rounding_value', { min: 0, required: false }),
+    validate
+  ],
+  productController.bulkUpdateByMargin
+);
+
+/**
+ * @route   POST /api/v1/products/bulk-update-supplier
+ * @desc    Bulk update prices for all products from a supplier
+ * @access  Private (can_manage_products)
+ */
+router.post(
+  '/bulk-update-supplier',
+  requirePermission('canManageProducts'),
+  [
+    uuidField('supplier_id'),
+    decimalField('margin_percentage', { min: 0, max: 500 }),
+    stringField('rounding_rule', { required: false }),
+    integerField('rounding_value', { min: 0, required: false }),
+    booleanField('update_cost_prices'),
+    validate
+  ],
+  productController.bulkUpdateBySupplier
+);
+
 module.exports = router;

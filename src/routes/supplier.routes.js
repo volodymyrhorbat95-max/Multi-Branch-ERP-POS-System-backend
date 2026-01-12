@@ -269,4 +269,124 @@ router.post(
   async (req, res) => res.status(501).json({ message: 'Not implemented' })
 );
 
+// ===== Purchase Order Routes =====
+
+/**
+ * @route   GET /api/v1/suppliers/purchase-orders
+ * @desc    Get all purchase orders with filters
+ * @access  Private
+ */
+router.get(
+  '/purchase-orders',
+  [
+    ...paginationQuery,
+    query('supplier_id').optional().isUUID(4),
+    query('branch_id').optional().isUUID(4),
+    query('status').optional().isIn(['DRAFT', 'SUBMITTED', 'APPROVED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CANCELLED']),
+    validate
+  ],
+  supplierController.getPurchaseOrders
+);
+
+/**
+ * @route   GET /api/v1/suppliers/purchase-orders/:id
+ * @desc    Get purchase order by ID
+ * @access  Private
+ */
+router.get(
+  '/purchase-orders/:id',
+  [uuidParam('id'), validate],
+  supplierController.getPurchaseOrderById
+);
+
+/**
+ * @route   POST /api/v1/suppliers/purchase-orders
+ * @desc    Create new purchase order
+ * @access  Private (can_manage_suppliers)
+ */
+router.post(
+  '/purchase-orders',
+  requirePermission('canManageSuppliers'),
+  [
+    uuidField('supplier_id'),
+    uuidField('branch_id'),
+    stringField('expected_date', { required: false }),
+    stringField('notes', { required: false }),
+    validate
+  ],
+  supplierController.createPurchaseOrder
+);
+
+/**
+ * @route   PUT /api/v1/suppliers/purchase-orders/:id
+ * @desc    Update purchase order (draft only)
+ * @access  Private (can_manage_suppliers)
+ */
+router.put(
+  '/purchase-orders/:id',
+  requirePermission('canManageSuppliers'),
+  [
+    uuidParam('id'),
+    stringField('expected_date', { required: false }),
+    stringField('notes', { required: false }),
+    validate
+  ],
+  supplierController.updatePurchaseOrder
+);
+
+/**
+ * @route   POST /api/v1/suppliers/purchase-orders/:id/submit
+ * @desc    Submit purchase order for approval
+ * @access  Private (can_manage_suppliers)
+ */
+router.post(
+  '/purchase-orders/:id/submit',
+  requirePermission('canManageSuppliers'),
+  [uuidParam('id'), validate],
+  supplierController.submitPurchaseOrder
+);
+
+/**
+ * @route   POST /api/v1/suppliers/purchase-orders/:id/approve
+ * @desc    Approve purchase order
+ * @access  Private (can_manage_suppliers)
+ */
+router.post(
+  '/purchase-orders/:id/approve',
+  requirePermission('canManageSuppliers'),
+  [uuidParam('id'), validate],
+  supplierController.approvePurchaseOrder
+);
+
+/**
+ * @route   POST /api/v1/suppliers/purchase-orders/:id/receive
+ * @desc    Receive purchase order items
+ * @access  Private (can_manage_suppliers)
+ */
+router.post(
+  '/purchase-orders/:id/receive',
+  requirePermission('canManageSuppliers'),
+  [
+    uuidParam('id'),
+    validate
+  ],
+  supplierController.receivePurchaseOrder
+);
+
+/**
+ * @route   POST /api/v1/suppliers/purchase-orders/:id/cancel
+ * @desc    Cancel purchase order
+ * @access  Private (can_manage_suppliers)
+ */
+router.post(
+  '/purchase-orders/:id/cancel',
+  requirePermission('canManageSuppliers'),
+  [
+    uuidParam('id'),
+    stringField('reason', { required: false }),
+    validate
+  ],
+  supplierController.cancelPurchaseOrder
+);
+
 module.exports = router;

@@ -1,6 +1,46 @@
 'use strict';
 const { v4: uuidv4 } = require('uuid');
 
+// Helper function to generate realistic bill breakdown for a given amount
+const generateBillBreakdown = (totalAmount) => {
+  // Start with larger denominations and work down
+  let remaining = totalAmount;
+
+  const bills_1000 = Math.floor(remaining / 1000 * 0.3); // 30% in 1000s
+  remaining -= bills_1000 * 1000;
+
+  const bills_500 = Math.floor(remaining / 500 * 0.4); // 40% in 500s
+  remaining -= bills_500 * 500;
+
+  const bills_200 = Math.floor(remaining / 200 * 0.3); // 30% in 200s
+  remaining -= bills_200 * 200;
+
+  const bills_100 = Math.floor(remaining / 100 * 0.5); // 50% in 100s
+  remaining -= bills_100 * 100;
+
+  const bills_50 = Math.floor(remaining / 50 * 0.4); // 40% in 50s
+  remaining -= bills_50 * 50;
+
+  const bills_20 = Math.floor(remaining / 20 * 0.5); // 50% in 20s
+  remaining -= bills_20 * 20;
+
+  const bills_10 = Math.floor(remaining / 10 * 0.5); // 50% in 10s
+  remaining -= bills_10 * 10;
+
+  const coins = remaining; // Rest in coins
+
+  return {
+    bills_1000,
+    bills_500,
+    bills_200,
+    bills_100,
+    bills_50,
+    bills_20,
+    bills_10,
+    coins
+  };
+};
+
 module.exports = {
   async up(queryInterface) {
     // Get all cash registers
@@ -47,6 +87,8 @@ module.exports = {
 
     // ===== Branch 1 Sessions =====
     // 3 days ago - CLOSED session (morning shift - Carlos)
+    const openingBreakdown1 = generateBillBreakdown(50000.00);
+    const closingBreakdown1 = generateBillBreakdown(185500.00);
     sessions.push({
       id: uuidv4(),
       register_id: br1Registers[0].id,
@@ -57,6 +99,14 @@ module.exports = {
       opened_by: carlos.id,
       opened_at: new Date(threeDaysAgo.setHours(8, 0, 0)),
       opening_cash: 50000.00,
+      opening_bills_1000: openingBreakdown1.bills_1000,
+      opening_bills_500: openingBreakdown1.bills_500,
+      opening_bills_200: openingBreakdown1.bills_200,
+      opening_bills_100: openingBreakdown1.bills_100,
+      opening_bills_50: openingBreakdown1.bills_50,
+      opening_bills_20: openingBreakdown1.bills_20,
+      opening_bills_10: openingBreakdown1.bills_10,
+      opening_coins: openingBreakdown1.coins,
       opening_notes: 'Apertura turno manana',
       closed_by: carlos.id,
       closed_at: new Date(threeDaysAgo.setHours(14, 0, 0)),
@@ -73,6 +123,14 @@ module.exports = {
       discrepancy_qr: 0.00,
       discrepancy_transfer: 0.00,
       total_discrepancy: 500.00,
+      closing_bills_1000: closingBreakdown1.bills_1000,
+      closing_bills_500: closingBreakdown1.bills_500,
+      closing_bills_200: closingBreakdown1.bills_200,
+      closing_bills_100: closingBreakdown1.bills_100,
+      closing_bills_50: closingBreakdown1.bills_50,
+      closing_bills_20: closingBreakdown1.bills_20,
+      closing_bills_10: closingBreakdown1.bills_10,
+      closing_coins: closingBreakdown1.coins,
       status: 'CLOSED',
       closing_notes: 'Cierre sin novedades. Sobrante de $500 en efectivo.',
       created_at: new Date(threeDaysAgo),
@@ -80,6 +138,8 @@ module.exports = {
     });
 
     // 3 days ago - CLOSED session (afternoon shift - manager Maria)
+    const openingBreakdown2 = generateBillBreakdown(50000.00);
+    const closingBreakdown2 = generateBillBreakdown(220000.00);
     sessions.push({
       id: uuidv4(),
       register_id: br1Registers[0].id,
@@ -90,6 +150,14 @@ module.exports = {
       opened_by: manager.id,
       opened_at: new Date(threeDaysAgo.setHours(14, 30, 0)),
       opening_cash: 50000.00,
+      opening_bills_1000: openingBreakdown2.bills_1000,
+      opening_bills_500: openingBreakdown2.bills_500,
+      opening_bills_200: openingBreakdown2.bills_200,
+      opening_bills_100: openingBreakdown2.bills_100,
+      opening_bills_50: openingBreakdown2.bills_50,
+      opening_bills_20: openingBreakdown2.bills_20,
+      opening_bills_10: openingBreakdown2.bills_10,
+      opening_coins: openingBreakdown2.coins,
       opening_notes: 'Apertura turno tarde',
       closed_by: manager.id,
       closed_at: new Date(threeDaysAgo.setHours(21, 0, 0)),
@@ -106,6 +174,14 @@ module.exports = {
       discrepancy_qr: 0.00,
       discrepancy_transfer: 0.00,
       total_discrepancy: 0.00,
+      closing_bills_1000: closingBreakdown2.bills_1000,
+      closing_bills_500: closingBreakdown2.bills_500,
+      closing_bills_200: closingBreakdown2.bills_200,
+      closing_bills_100: closingBreakdown2.bills_100,
+      closing_bills_50: closingBreakdown2.bills_50,
+      closing_bills_20: closingBreakdown2.bills_20,
+      closing_bills_10: closingBreakdown2.bills_10,
+      closing_coins: closingBreakdown2.coins,
       status: 'CLOSED',
       closing_notes: 'Cierre perfecto, sin discrepancias',
       created_at: new Date(threeDaysAgo),

@@ -137,8 +137,10 @@ exports.create = async (req, res, next) => {
   try {
     const {
       branch_id, register_id, session_id, customer_id, seller_id,
-      discount_percent, discount_amount, points_redeemed, credit_used,
-      change_as_credit, items, payments, local_id, local_created_at
+      discount_percent, discount_amount, discount_type, discount_value,
+      points_redeemed, credit_used, change_as_credit, items, payments,
+      local_id, local_created_at,
+      invoice_override // Invoice override parameters from frontend
     } = req.body;
 
     // Verify session is open
@@ -188,7 +190,17 @@ exports.create = async (req, res, next) => {
     }
 
     // Apply sale-level discount
-    const saleDiscount = discount_amount || (discount_percent ? subtotal * discount_percent / 100 : 0);
+    // Support both old format (discount_percent/discount_amount) and new format (discount_type/discount_value)
+    let saleDiscount = 0;
+    if (discount_type && discount_value) {
+      // New format from frontend
+      saleDiscount = discount_type === 'FIXED'
+        ? discount_value
+        : (discount_type === 'PERCENT' ? subtotal * discount_value / 100 : 0);
+    } else {
+      // Old format (backward compatibility)
+      saleDiscount = discount_amount || (discount_percent ? subtotal * discount_percent / 100 : 0);
+    }
 
     // Calculate points redemption value
     const pointsValue = points_redeemed ? points_redeemed * 1 : 0; // 1 peso per point
@@ -395,7 +407,7 @@ exports.create = async (req, res, next) => {
     // Automatic invoice generation through FactuHoy (async, don't block response)
     setImmediate(async () => {
       try {
-        await generateInvoiceForSale(sale.id, branch_id, customer_id, req.user.id);
+        await generateInvoiceForSale(sale.id, branch_id, customer_id, req.user.id, invoice_override);
       } catch (error) {
         logger.error(`Failed to generate invoice for sale ${sale.sale_number}`, {
           sale_id: sale.id,
@@ -884,9 +896,32 @@ exports.getSummaryReport = async (req, res, next) => {
 /**
  * Helper function: Generate invoice for sale through FactuHoy
  * Called asynchronously after sale creation
+ * @param {string} saleId - Sale ID
+ * @param {string} branchId - Branch ID
+ * @param {string} customerId - Customer ID (optional)
+ * @param {string} userId - User ID who created the sale
+ * @param {object} invoiceOverride - Optional invoice override from frontend
+ * @param {string} invoiceOverride.invoice_type - Override invoice type (A/B/C)
+ * @param {string} invoiceOverride.customer_cuit - Override customer CUIT
+ * @param {string} invoiceOverride.customer_tax_condition - Override customer tax condition
+ * @param {string} invoiceOverride.customer_address - Override customer address
  */
-async function generateInvoiceForSale(saleId, branchId, customerId, userId) {
+async function generateInvoiceForSale(saleId, branchId, customerId, userId, invoiceOverride = null) {
   try {
+    // DUPLICATE PREVENTION: Check if invoice already exists for this sale
+    const existingInvoice = await Invoice.findOne({
+      where: { sale_id: saleId }
+    });
+
+    if (existingInvoice) {
+      logger.warn(`Invoice already exists for sale ${saleId} - skipping generation`, {
+        sale_id: saleId,
+        existing_invoice_id: existingInvoice.id,
+        status: existingInvoice.status
+      });
+      return existingInvoice;
+    }
+
     // Load sale with all details
     const sale = await Sale.findByPk(saleId, {
       include: [
@@ -907,14 +942,20 @@ async function generateInvoiceForSale(saleId, branchId, customerId, userId) {
     const branch = sale.branch;
     const customer = sale.customer;
 
-    // Determine invoice type based on customer and branch tax conditions
+    // Determine invoice type - use override if provided, otherwise auto-determine
     let invoiceType = 'B'; // Default to B
-    if (customer) {
+    if (invoiceOverride && invoiceOverride.invoice_type) {
+      // Use frontend-selected invoice type
+      invoiceType = invoiceOverride.invoice_type;
+      logger.info(`Using override invoice type: ${invoiceType}`, { sale_id: saleId });
+    } else if (customer) {
+      // Auto-determine based on tax conditions
       invoiceType = factuHoyService.determineInvoiceType(
         branch.tax_condition,
         customer.tax_condition,
         customer.document_number
       );
+      logger.info(`Auto-determined invoice type: ${invoiceType}`, { sale_id: saleId });
     }
 
     // Get invoice type from database
@@ -942,6 +983,33 @@ async function generateInvoiceForSale(saleId, branchId, customerId, userId) {
     const taxAmount = parseFloat(sale.tax_amount);
     const netAmount = totalAmount - taxAmount;
 
+    // Determine customer data - use override if provided for Type A
+    const customerData = {
+      name: customer ? (customer.company_name || `${customer.first_name} ${customer.last_name}`) : 'Consumidor Final',
+      document_type: customer?.document_type || 'DNI',
+      document_number: customer?.document_number || null,
+      tax_condition: customer?.tax_condition || 'CONSUMIDOR_FINAL',
+      address: customer?.address || null
+    };
+
+    // Override customer data if provided (for Invoice Type A)
+    if (invoiceOverride) {
+      if (invoiceOverride.customer_cuit) {
+        customerData.document_number = invoiceOverride.customer_cuit;
+        customerData.document_type = 'CUIT'; // CUIT implies document type is CUIT
+      }
+      if (invoiceOverride.customer_tax_condition) {
+        customerData.tax_condition = invoiceOverride.customer_tax_condition;
+      }
+      if (invoiceOverride.customer_address) {
+        customerData.address = invoiceOverride.customer_address;
+      }
+      logger.info(`Using override customer data for invoice`, {
+        sale_id: saleId,
+        override_data: invoiceOverride
+      });
+    }
+
     // Create invoice record with PENDING status
     const invoice = await Invoice.create({
       id: uuidv4(),
@@ -949,11 +1017,11 @@ async function generateInvoiceForSale(saleId, branchId, customerId, userId) {
       invoice_type_id: invoiceTypeRecord.id,
       point_of_sale: branch.factuhoy_point_of_sale || 1,
       invoice_number: nextInvoiceNumber,
-      customer_name: customer ? (customer.company_name || `${customer.first_name} ${customer.last_name}`) : 'Consumidor Final',
-      customer_document_type: customer?.document_type || 'DNI',
-      customer_document_number: customer?.document_number || null,
-      customer_tax_condition: customer?.tax_condition || 'CONSUMIDOR_FINAL',
-      customer_address: customer?.address || null,
+      customer_name: customerData.name,
+      customer_document_type: customerData.document_type,
+      customer_document_number: customerData.document_number,
+      customer_tax_condition: customerData.tax_condition,
+      customer_address: customerData.address,
       net_amount: netAmount,
       tax_amount: taxAmount,
       total_amount: totalAmount,
@@ -968,22 +1036,16 @@ async function generateInvoiceForSale(saleId, branchId, customerId, userId) {
       status: 'PENDING'
     });
 
-    // Prepare data for FactuHoy
+    // Prepare data for FactuHoy - use the prepared customerData (with overrides applied)
     const invoiceData = {
       invoice_type: invoiceType,
       point_of_sale: branch.factuhoy_point_of_sale || 1,
-      customer: customer ? {
-        name: customer.company_name || `${customer.first_name} ${customer.last_name}`,
-        document_type: customer.document_type,
-        document_number: customer.document_number,
-        tax_condition: customer.tax_condition,
-        address: customer.address
-      } : {
-        name: 'Consumidor Final',
-        document_type: 'DNI',
-        document_number: '0',
-        tax_condition: 'CONSUMIDOR_FINAL',
-        address: ''
+      customer: {
+        name: customerData.name,
+        document_type: customerData.document_type,
+        document_number: customerData.document_number || '0',
+        tax_condition: customerData.tax_condition,
+        address: customerData.address || ''
       },
       items: sale.items.map(item => ({
         description: item.product_name,

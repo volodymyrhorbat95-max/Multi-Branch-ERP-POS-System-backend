@@ -73,6 +73,12 @@ module.exports = {
         type: Sequelize.STRING(20),
         defaultValue: 'THERMAL'
       },
+      petty_cash_amount: {
+        type: Sequelize.DECIMAL(12, 2),
+        allowNull: false,
+        defaultValue: 100000.00,
+        comment: 'Minimum petty cash fund that must remain at branch (change fund)'
+      },
       is_active: {
         type: Sequelize.BOOLEAN,
         defaultValue: true

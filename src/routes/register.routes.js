@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const registerController = require('../controllers/register.controller');
+const withdrawalController = require('../controllers/withdrawal.controller');
 const { authenticate, requirePermission, verifyManagerPin } = require('../middleware/auth');
 const {
   validate,
@@ -184,6 +185,50 @@ router.get(
   '/sessions/:sessionId/summary',
   [uuidParam('sessionId'), validate],
   registerController.getSessionSummary
+);
+
+// ===== Cash Withdrawal Routes =====
+
+/**
+ * @route   POST /api/v1/registers/sessions/:sessionId/withdrawals
+ * @desc    Create cash withdrawal during session
+ * @access  Private
+ */
+router.post(
+  '/sessions/:sessionId/withdrawals',
+  [
+    uuidParam('sessionId'),
+    decimalField('amount', { min: 0.01 }),
+    enumField('withdrawal_type', ['SUPPLIER_PAYMENT', 'EMPLOYEE_ADVANCE', 'OPERATIONAL_EXPENSE', 'OTHER']),
+    stringField('recipient_name', { minLength: 1, maxLength: 200 }),
+    stringField('reason', { minLength: 1 }),
+    stringField('receipt_number', { maxLength: 50, required: false }),
+    stringField('local_id', { maxLength: 50, required: false }),
+    validate
+  ],
+  withdrawalController.createWithdrawal
+);
+
+/**
+ * @route   GET /api/v1/registers/sessions/:sessionId/withdrawals
+ * @desc    Get all withdrawals for a session
+ * @access  Private
+ */
+router.get(
+  '/sessions/:sessionId/withdrawals',
+  [uuidParam('sessionId'), validate],
+  withdrawalController.getSessionWithdrawals
+);
+
+/**
+ * @route   GET /api/v1/withdrawals/:id
+ * @desc    Get withdrawal by ID
+ * @access  Private
+ */
+router.get(
+  '/withdrawals/:id',
+  [uuidParam('id'), validate],
+  withdrawalController.getWithdrawalById
 );
 
 // ===== Daily Report Routes =====

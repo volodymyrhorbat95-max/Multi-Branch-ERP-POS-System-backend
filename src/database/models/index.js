@@ -31,6 +31,8 @@ const Product = require('./Product')(sequelize);
 const ProductPriceHistory = require('./ProductPriceHistory')(sequelize);
 const Supplier = require('./Supplier')(sequelize);
 const SupplierProduct = require('./SupplierProduct')(sequelize);
+const PurchaseOrder = require('./PurchaseOrder')(sequelize);
+const PurchaseOrderItem = require('./PurchaseOrderItem')(sequelize);
 const PriceImportBatch = require('./PriceImportBatch')(sequelize);
 const PriceImportItem = require('./PriceImportItem')(sequelize);
 const BranchStock = require('./BranchStock')(sequelize);
@@ -42,6 +44,7 @@ const LoyaltyTransaction = require('./LoyaltyTransaction')(sequelize);
 const CreditTransaction = require('./CreditTransaction')(sequelize);
 const CashRegister = require('./CashRegister')(sequelize);
 const RegisterSession = require('./RegisterSession')(sequelize);
+const CashWithdrawal = require('./CashWithdrawal')(sequelize);
 const DailyReport = require('./DailyReport')(sequelize);
 const PaymentMethod = require('./PaymentMethod')(sequelize);
 const Sale = require('./Sale')(sequelize);
@@ -67,6 +70,8 @@ const models = {
   ProductPriceHistory,
   Supplier,
   SupplierProduct,
+  PurchaseOrder,
+  PurchaseOrderItem,
   PriceImportBatch,
   PriceImportItem,
   BranchStock,
@@ -78,6 +83,7 @@ const models = {
   CreditTransaction,
   CashRegister,
   RegisterSession,
+  CashWithdrawal,
   DailyReport,
   PaymentMethod,
   Sale,

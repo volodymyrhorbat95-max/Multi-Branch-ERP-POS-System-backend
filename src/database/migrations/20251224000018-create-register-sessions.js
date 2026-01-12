@@ -63,6 +63,54 @@ module.exports = {
         allowNull: false,
         defaultValue: 0
       },
+      opening_bills_1000: {
+        type: Sequelize.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+        comment: 'Quantity of $1000 bills at opening'
+      },
+      opening_bills_500: {
+        type: Sequelize.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+        comment: 'Quantity of $500 bills at opening'
+      },
+      opening_bills_200: {
+        type: Sequelize.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+        comment: 'Quantity of $200 bills at opening'
+      },
+      opening_bills_100: {
+        type: Sequelize.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+        comment: 'Quantity of $100 bills at opening'
+      },
+      opening_bills_50: {
+        type: Sequelize.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+        comment: 'Quantity of $50 bills at opening'
+      },
+      opening_bills_20: {
+        type: Sequelize.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+        comment: 'Quantity of $20 bills at opening'
+      },
+      opening_bills_10: {
+        type: Sequelize.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+        comment: 'Quantity of $10 bills at opening'
+      },
+      opening_coins: {
+        type: Sequelize.DECIMAL(12, 2),
+        allowNull: false,
+        defaultValue: 0,
+        comment: 'Total amount in coins at opening'
+      },
       opening_notes: {
         type: Sequelize.TEXT,
         allowNull: true
@@ -132,6 +180,46 @@ module.exports = {
       total_discrepancy: {
         type: Sequelize.DECIMAL(12, 2),
         allowNull: true
+      },
+      closing_bills_1000: {
+        type: Sequelize.INTEGER,
+        allowNull: true,
+        comment: 'Quantity of $1000 bills at closing'
+      },
+      closing_bills_500: {
+        type: Sequelize.INTEGER,
+        allowNull: true,
+        comment: 'Quantity of $500 bills at closing'
+      },
+      closing_bills_200: {
+        type: Sequelize.INTEGER,
+        allowNull: true,
+        comment: 'Quantity of $200 bills at closing'
+      },
+      closing_bills_100: {
+        type: Sequelize.INTEGER,
+        allowNull: true,
+        comment: 'Quantity of $100 bills at closing'
+      },
+      closing_bills_50: {
+        type: Sequelize.INTEGER,
+        allowNull: true,
+        comment: 'Quantity of $50 bills at closing'
+      },
+      closing_bills_20: {
+        type: Sequelize.INTEGER,
+        allowNull: true,
+        comment: 'Quantity of $20 bills at closing'
+      },
+      closing_bills_10: {
+        type: Sequelize.INTEGER,
+        allowNull: true,
+        comment: 'Quantity of $10 bills at closing'
+      },
+      closing_coins: {
+        type: Sequelize.DECIMAL(12, 2),
+        allowNull: true,
+        comment: 'Total amount in coins at closing'
       },
       status: {
         type: Sequelize.STRING(20),

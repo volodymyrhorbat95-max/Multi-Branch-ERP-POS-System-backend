@@ -12,6 +12,7 @@ const routes = require('./routes');
 const errorHandler = require('./middleware/errorHandler');
 const { setupSocketIO } = require('./socket');
 const logger = require('./utils/logger');
+const invoiceRetryScheduler = require('./schedulers/invoiceRetry');
 
 const app = express();
 const httpServer = createServer(app);
@@ -80,6 +81,9 @@ const startServer = async () => {
     // Start HTTP server
     httpServer.listen(PORT, () => {
       logger.info(`Server running on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
+
+      // Start invoice retry scheduler after server is running
+      invoiceRetryScheduler.start();
     });
   } catch (error) {
     logger.error('Unable to start server:', error);
@@ -90,6 +94,7 @@ const startServer = async () => {
 // Handle graceful shutdown
 process.on('SIGTERM', async () => {
   logger.info('SIGTERM received. Shutting down gracefully...');
+  invoiceRetryScheduler.stop();
   await sequelize.close();
   httpServer.close(() => {
     logger.info('Server closed');
@@ -99,6 +104,7 @@ process.on('SIGTERM', async () => {
 
 process.on('SIGINT', async () => {
   logger.info('SIGINT received. Shutting down gracefully...');
+  invoiceRetryScheduler.stop();
   await sequelize.close();
   httpServer.close(() => {
     logger.info('Server closed');

@@ -95,6 +95,7 @@ module.exports = (sequelize) => {
   Supplier.associate = (models) => {
     Supplier.hasMany(models.SupplierProduct, { foreignKey: 'supplier_id', as: 'products' });
     Supplier.hasMany(models.PriceImportBatch, { foreignKey: 'supplier_id', as: 'import_batches' });
+    Supplier.hasMany(models.PurchaseOrder, { foreignKey: 'supplier_id', as: 'purchase_orders' });
   };
 
   return Supplier;

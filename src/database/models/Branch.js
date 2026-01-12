@@ -53,6 +53,13 @@ module.exports = (sequelize) => {
       type: DataTypes.BOOLEAN,
       defaultValue: true
     },
+    // Petty Cash Fund
+    petty_cash_amount: {
+      type: DataTypes.DECIMAL(12, 2),
+      allowNull: false,
+      defaultValue: 100000.00,
+      comment: 'Minimum petty cash fund that must remain at branch (change fund)'
+    },
     // FactuHoy/AFIP configuration
     factuhoy_point_of_sale: {
       type: DataTypes.INTEGER,
