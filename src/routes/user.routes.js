@@ -20,10 +20,11 @@ router.use(authenticate);
 /**
  * @route   GET /api/v1/users
  * @desc    Get all users
- * @access  Private (can_manage_users or own branch users)
+ * @access  Private (can_manage_users)
  */
 router.get(
   '/',
+  requirePermission('canManageUsers'),
   paginationQuery,
   validate,
   userController.getAll

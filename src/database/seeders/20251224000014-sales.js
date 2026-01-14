@@ -67,6 +67,37 @@ module.exports = {
         const taxAmount = Math.floor((subtotal - discountAmount) * 0.21);
         const totalAmount = subtotal - discountAmount;
 
+        // Discount tracking
+        let discountType = null;
+        let discountReason = null;
+        let discountAppliedBy = null;
+        let discountApprovedBy = null;
+
+        if (hasDiscount) {
+          if (customer?.is_wholesale) {
+            discountType = 'WHOLESALE';
+            discountReason = 'Cliente mayorista';
+          } else {
+            const discountTypes = ['PERCENT', 'FIXED'];
+            discountType = discountTypes[Math.floor(Math.random() * discountTypes.length)];
+            const reasons = [
+              'Promoción del día',
+              'Cliente frecuente',
+              'Descuento por volumen',
+              'Liquidación de stock',
+              'Compensación por error'
+            ];
+            discountReason = reasons[Math.floor(Math.random() * reasons.length)];
+          }
+          discountAppliedBy = session.opened_by;
+
+          // Manager approval required for discounts > 5%
+          if (discountPercent > 5) {
+            const manager = users.find(u => u.email === 'maria@petfood.com');
+            discountApprovedBy = manager ? manager.id : null;
+          }
+        }
+
         // Points (only for customers)
         const pointsEarned = customer && !customer.is_wholesale ? Math.floor(totalAmount / 100) : 0;
         const pointsRedeemed = customer && Math.random() > 0.9 ? Math.floor(Math.random() * 50) : 0;
@@ -112,6 +143,10 @@ module.exports = {
           subtotal: subtotal,
           discount_amount: discountAmount,
           discount_percent: discountPercent,
+          discount_type: discountType,
+          discount_reason: discountReason,
+          discount_applied_by: discountAppliedBy,
+          discount_approved_by: discountApprovedBy,
           tax_amount: taxAmount,
           total_amount: totalAmount,
           points_earned: pointsEarned,
@@ -150,6 +185,37 @@ module.exports = {
         const taxAmount = Math.floor((subtotal - discountAmount) * 0.21);
         const totalAmount = subtotal - discountAmount;
 
+        // Discount tracking
+        let discountType = null;
+        let discountReason = null;
+        let discountAppliedBy = null;
+        let discountApprovedBy = null;
+
+        if (hasDiscount) {
+          if (customer?.is_wholesale) {
+            discountType = 'WHOLESALE';
+            discountReason = 'Cliente mayorista';
+          } else {
+            const discountTypes = ['PERCENT', 'FIXED'];
+            discountType = discountTypes[Math.floor(Math.random() * discountTypes.length)];
+            const reasons = [
+              'Promoción del día',
+              'Cliente frecuente',
+              'Descuento por volumen',
+              'Liquidación de stock',
+              'Compensación por error'
+            ];
+            discountReason = reasons[Math.floor(Math.random() * reasons.length)];
+          }
+          discountAppliedBy = session.opened_by;
+
+          // Manager approval required for discounts > 5%
+          if (discountPercent > 5) {
+            const manager = users.find(u => u.email === 'maria@petfood.com');
+            discountApprovedBy = manager ? manager.id : null;
+          }
+        }
+
         const pointsEarned = customer && !customer.is_wholesale ? Math.floor(totalAmount / 100) : 0;
 
         // Today's sales within morning hours
@@ -170,6 +236,10 @@ module.exports = {
           subtotal: subtotal,
           discount_amount: discountAmount,
           discount_percent: discountPercent,
+          discount_type: discountType,
+          discount_reason: discountReason,
+          discount_applied_by: discountAppliedBy,
+          discount_approved_by: discountApprovedBy,
           tax_amount: taxAmount,
           total_amount: totalAmount,
           points_earned: pointsEarned,

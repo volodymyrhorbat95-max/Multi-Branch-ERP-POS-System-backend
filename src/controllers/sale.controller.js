@@ -1,10 +1,11 @@
 const { Op } = require('sequelize');
 const { v4: uuidv4 } = require('uuid');
+const bcrypt = require('bcryptjs');
 const {
   Sale, SaleItem, SalePayment, Branch, CashRegister, RegisterSession,
   Customer, User, Product, PaymentMethod, Invoice, InvoiceType,
   BranchStock, StockMovement, LoyaltyTransaction, CreditTransaction,
-  sequelize
+  Alert, CreditNote, sequelize
 } = require('../database/models');
 const { success, created, paginated } = require('../utils/apiResponse');
 const { NotFoundError, BusinessError } = require('../middleware/errorHandler');
@@ -12,6 +13,178 @@ const { parsePagination, generateSaleNumber, calculateLoyaltyPoints, formatDecim
 const { EVENTS } = require('../socket');
 const logger = require('../utils/logger');
 const factuHoyService = require('../services/factuhoy.service');
+const { logSaleCreate, logSaleVoid, logDiscountApply } = require('../utils/auditLogger');
+const { getAlertThresholds } = require('../utils/alertThresholds');
+
+/**
+ * Generate credit note for a voided sale with issued invoice
+ * This runs asynchronously after sale void to cancel the AFIP invoice
+ */
+async function generateCreditNoteForVoidedSale(invoiceId, saleId, reason, userId) {
+  try {
+    logger.info(`Generating credit note for voided sale ${saleId}, invoice ${invoiceId}`);
+
+    // Load invoice with all relationships
+    const invoice = await Invoice.findByPk(invoiceId, {
+      include: [
+        {
+          model: Sale,
+          as: 'sale',
+          include: [
+            { model: Branch, as: 'branch' },
+            { model: Customer, as: 'customer' },
+            {
+              model: SaleItem,
+              as: 'items',
+              include: [{ model: Product, as: 'product' }]
+            }
+          ]
+        },
+        { model: InvoiceType, as: 'invoice_type' }
+      ]
+    });
+
+    if (!invoice) {
+      throw new Error(`Invoice ${invoiceId} not found`);
+    }
+
+    if (invoice.status !== 'CANCELLED') {
+      throw new Error(`Invoice ${invoiceId} is not cancelled (status: ${invoice.status})`);
+    }
+
+    const sale = invoice.sale;
+    const branch = sale.branch;
+
+    // Determine credit note type based on invoice type
+    const creditNoteTypeMap = {
+      'A': 'A',
+      'B': 'B',
+      'C': 'C'
+    };
+    const creditNoteType = creditNoteTypeMap[invoice.invoice_type.code] || 'B';
+
+    // Generate credit note number
+    const pointOfSale = branch.factuhoy_point_of_sale || 1;
+    const lastCreditNote = await CreditNote.findOne({
+      where: {
+        branch_id: branch.id,
+        credit_note_type: creditNoteType
+      },
+      order: [['credit_note_number', 'DESC']]
+    });
+
+    const nextNumber = lastCreditNote ? lastCreditNote.credit_note_number + 1 : 1;
+
+    // Create credit note record first
+    const creditNote = await CreditNote.create({
+      original_invoice_id: invoice.id,
+      branch_id: branch.id,
+      credit_note_type: creditNoteType,
+      point_of_sale: pointOfSale,
+      credit_note_number: nextNumber,
+      reason: reason || 'Venta cancelada',
+      net_amount: parseFloat(invoice.net_amount),
+      tax_amount: parseFloat(invoice.tax_amount),
+      total_amount: parseFloat(invoice.total_amount),
+      status: 'PENDING',
+      created_by: userId,
+      retry_count: 0
+    });
+
+    logger.info(`Credit note ${creditNote.id} created for invoice ${invoice.id}`);
+
+    // Prepare credit note data for FactuHoy
+    const creditNoteData = {
+      credit_note_type: `NC_${creditNoteType}`,
+      point_of_sale: invoice.point_of_sale,
+      customer: {
+        name: invoice.customer_name,
+        document_type: invoice.customer_document_type,
+        document_number: invoice.customer_document_number || '0',
+        tax_condition: invoice.customer_tax_condition,
+        address: invoice.customer_address || ''
+      },
+      items: sale.items.map(item => ({
+        description: item.product_name,
+        quantity: parseFloat(item.quantity),
+        unit_price: parseFloat(item.unit_price),
+        tax_rate: parseFloat(item.tax_rate) || 21,
+        total: parseFloat(item.total)
+      })),
+      totals: {
+        subtotal: parseFloat(invoice.net_amount),
+        tax_21: parseFloat(invoice.tax_amount),
+        tax_10_5: 0,
+        tax_27: 0,
+        total: parseFloat(invoice.total_amount)
+      },
+      original_invoice: {
+        type: invoice.invoice_type.code,
+        point_of_sale: invoice.point_of_sale,
+        number: invoice.invoice_number
+      },
+      reason: reason || 'Venta cancelada',
+      branch: branch
+    };
+
+    // Submit to FactuHoy API
+    const result = await factuHoyService.createCreditNote(creditNoteData);
+
+    if (result.success) {
+      // Update credit note with CAE and success status
+      await creditNote.update({
+        cae: result.cae,
+        cae_expiration_date: result.cae_expiration,
+        factuhoy_id: result.invoice_number?.toString() || null,
+        factuhoy_response: result.afip_response,
+        pdf_url: result.pdf_url || result.afip_response?.pdf_url || null,
+        status: 'ISSUED',
+        issued_at: new Date(),
+        error_message: null
+      });
+
+      logger.info(`Credit note ${creditNote.id} issued successfully - CAE: ${result.cae}`);
+
+      return { success: true, credit_note_id: creditNote.id, cae: result.cae };
+    } else {
+      // Mark as failed, will be retried later
+      const newRetryCount = creditNote.retry_count + 1;
+      await creditNote.update({
+        status: result.retryable && newRetryCount < 3 ? 'PENDING' : 'FAILED',
+        error_message: result.error,
+        factuhoy_response: result.afip_response,
+        retry_count: newRetryCount,
+        last_retry_at: new Date()
+      });
+
+      logger.error(`Credit note ${creditNote.id} submission failed - ${result.error}`);
+
+      // Create alert for failed credit note
+      await Alert.create({
+        id: uuidv4(),
+        alert_type: 'FAILED_INVOICE',
+        severity: result.retryable && newRetryCount < 3 ? 'MEDIUM' : 'HIGH',
+        branch_id: branch.id,
+        user_id: userId,
+        title: `Nota de crédito tipo ${creditNoteType} falló`,
+        message: `Error al generar nota de crédito para venta ${sale.sale_number}. ${result.error}`,
+        reference_type: 'CREDIT_NOTE',
+        reference_id: creditNote.id
+      });
+
+      return { success: false, credit_note_id: creditNote.id, error: result.error };
+    }
+  } catch (error) {
+    logger.error(`Error generating credit note for invoice ${invoiceId}`, {
+      error: error.message,
+      stack: error.stack,
+      invoice_id: invoiceId,
+      sale_id: saleId
+    });
+
+    throw error;
+  }
+}
 
 /**
  * Get all sales with filters
@@ -138,6 +311,7 @@ exports.create = async (req, res, next) => {
     const {
       branch_id, register_id, session_id, customer_id, seller_id,
       discount_percent, discount_amount, discount_type, discount_value,
+      discount_reason, discount_approved_by_pin,
       points_redeemed, credit_used, change_as_credit, items, payments,
       local_id, local_created_at,
       invoice_override // Invoice override parameters from frontend
@@ -192,18 +366,101 @@ exports.create = async (req, res, next) => {
     // Apply sale-level discount
     // Support both old format (discount_percent/discount_amount) and new format (discount_type/discount_value)
     let saleDiscount = 0;
+    let actualDiscountType = null;
+    let actualDiscountPercent = 0;
+    let discountAppliedBy = null;
+    let discountApprovedBy = null;
+
     if (discount_type && discount_value) {
       // New format from frontend
-      saleDiscount = discount_type === 'FIXED'
-        ? discount_value
-        : (discount_type === 'PERCENT' ? subtotal * discount_value / 100 : 0);
-    } else {
+      actualDiscountType = discount_type;
+
+      if (discount_type === 'FIXED') {
+        saleDiscount = discount_value;
+        actualDiscountPercent = (discount_value / subtotal) * 100;
+      } else if (discount_type === 'PERCENT') {
+        actualDiscountPercent = discount_value;
+        saleDiscount = subtotal * discount_value / 100;
+      }
+    } else if (discount_amount || discount_percent) {
       // Old format (backward compatibility)
       saleDiscount = discount_amount || (discount_percent ? subtotal * discount_percent / 100 : 0);
+      actualDiscountPercent = discount_percent || ((discount_amount / subtotal) * 100);
+      actualDiscountType = discount_amount ? 'FIXED' : 'PERCENT';
     }
 
-    // Calculate points redemption value
-    const pointsValue = points_redeemed ? points_redeemed * 1 : 0; // 1 peso per point
+    // Validate discount permissions if manual discount applied (not wholesale)
+    if (saleDiscount > 0 && actualDiscountType !== 'WHOLESALE') {
+      // Check if user has permission to give discounts
+      if (!req.user.permissions.canGiveDiscount) {
+        throw new BusinessError(
+          'No tienes permiso para aplicar descuentos. Requiere autorización de supervisor.',
+          'E409'
+        );
+      }
+
+      // Validate discount reason is provided for manual discounts
+      if (!discount_reason || discount_reason.trim() === '') {
+        throw new BusinessError(
+          'Debe proporcionar una razón para el descuento',
+          'E410'
+        );
+      }
+
+      // Check if discount exceeds user's maximum allowed percentage
+      const maxAllowed = req.user.permissions.maxDiscountPercent || 0;
+
+      if (actualDiscountPercent > maxAllowed) {
+        // Discount exceeds user's limit - requires manager approval
+        if (!discount_approved_by_pin) {
+          throw new BusinessError(
+            `Este descuento (${actualDiscountPercent.toFixed(1)}%) excede tu límite (${maxAllowed}%). Se requiere PIN de supervisor.`,
+            'E411'
+          );
+        }
+
+        // Verify manager PIN
+        const managers = await User.findAll({
+          include: [{
+            model: sequelize.models.Role,
+            as: 'role',
+            where: {
+              can_give_discount: true
+            }
+          }],
+          where: {
+            is_active: true
+          }
+        });
+
+        let managerAuthorized = null;
+        for (const manager of managers) {
+          if (manager.pin_code && await bcrypt.compare(discount_approved_by_pin, manager.pin_code)) {
+            // Verify manager has sufficient discount permission
+            const managerMaxDiscount = parseFloat(manager.role.max_discount_percent) || 0;
+            if (actualDiscountPercent <= managerMaxDiscount) {
+              managerAuthorized = manager;
+              break;
+            }
+          }
+        }
+
+        if (!managerAuthorized) {
+          throw new BusinessError(
+            'PIN de supervisor inválido o el supervisor no tiene permisos suficientes para aprobar este descuento',
+            'E412'
+          );
+        }
+
+        discountApprovedBy = managerAuthorized.id;
+        logger.info(`Discount of ${actualDiscountPercent.toFixed(1)}% approved by manager ${managerAuthorized.id} for user ${req.user.id}`);
+      }
+
+      discountAppliedBy = req.user.id;
+    }
+
+    // Calculate points redemption value (10 points = 1 peso, so 0.1 peso per point)
+    const pointsValue = points_redeemed ? points_redeemed * 0.1 : 0;
 
     // Calculate total
     const totalAmount = subtotal - saleDiscount - pointsValue - (credit_used || 0);
@@ -220,6 +477,32 @@ exports.create = async (req, res, next) => {
         throw new BusinessError(
           `${paymentMethod.name} requiere un número de comprobante/referencia`,
           'E408'
+        );
+      }
+
+      // Validate card payment fields
+      if (paymentMethod.code === 'DEBIT' || paymentMethod.code === 'CREDIT') {
+        if (!payment.authorization_code || payment.authorization_code.trim().length === 0) {
+          throw new BusinessError(
+            `${paymentMethod.name} requiere un código de autorización`,
+            'E409'
+          );
+        }
+
+        // Validate card_last_four if provided
+        if (payment.card_last_four && !/^\d{4}$/.test(payment.card_last_four)) {
+          throw new BusinessError(
+            'Los últimos 4 dígitos de la tarjeta deben ser numéricos',
+            'E410'
+          );
+        }
+      }
+
+      // Validate payment amount
+      if (!payment.amount || payment.amount <= 0) {
+        throw new BusinessError(
+          'El monto del pago debe ser mayor a cero',
+          'E411'
         );
       }
     }
@@ -241,7 +524,11 @@ exports.create = async (req, res, next) => {
       seller_id,
       subtotal,
       discount_amount: saleDiscount,
-      discount_percent: discount_percent || 0,
+      discount_percent: actualDiscountPercent || 0,
+      discount_type: actualDiscountType,
+      discount_reason: discount_reason || null,
+      discount_applied_by: discountAppliedBy,
+      discount_approved_by: discountApprovedBy,
       tax_amount: saleItems.reduce((sum, i) => sum + parseFloat(i.tax_amount), 0),
       total_amount: totalAmount,
       points_redeemed: points_redeemed || 0,
@@ -250,6 +537,7 @@ exports.create = async (req, res, next) => {
       change_as_credit: change_as_credit || 0,
       status: 'COMPLETED',
       created_by: req.user.id,
+      invoice_override: invoice_override || null,
       local_id,
       local_created_at,
       synced_at: new Date(),
@@ -287,6 +575,22 @@ exports.create = async (req, res, next) => {
             reference_id: sale.id,
             performed_by: req.user.id
           }, { transaction: t });
+
+          // Check for low stock and create alert if needed
+          const product = await Product.findByPk(item.product_id, { attributes: ['name', 'sku', 'minimum_stock'] });
+          if (product && product.minimum_stock && newQty <= product.minimum_stock) {
+            await Alert.create({
+              id: uuidv4(),
+              alert_type: 'LOW_STOCK',
+              severity: newQty === 0 ? 'HIGH' : 'MEDIUM',
+              branch_id,
+              user_id: req.user.id,
+              title: newQty === 0 ? `Stock agotado: ${product.name}` : `Stock bajo: ${product.name}`,
+              message: `${product.name} (SKU: ${product.sku}) tiene ${newQty} unidades. Mínimo requerido: ${product.minimum_stock}`,
+              reference_type: 'PRODUCT',
+              reference_id: item.product_id
+            }, { transaction: t });
+          }
         }
       }
     }
@@ -311,8 +615,14 @@ exports.create = async (req, res, next) => {
     if (customer_id) {
       const customer = await Customer.findByPk(customer_id);
 
-      // Deduct redeemed points
+      // Validate and deduct redeemed points
       if (points_redeemed > 0) {
+        if (customer.loyalty_points < points_redeemed) {
+          throw new BusinessError(
+            `Cliente no tiene suficientes puntos. Disponible: ${customer.loyalty_points}, Solicitado: ${points_redeemed}`,
+            'E413'
+          );
+        }
         const newBalance = customer.loyalty_points - points_redeemed;
         await customer.update({ loyalty_points: newBalance }, { transaction: t });
 
@@ -349,9 +659,16 @@ exports.create = async (req, res, next) => {
         await sale.save({ transaction: t });
       }
 
-      // Handle credit
+      // Validate and handle credit
       if (credit_used > 0) {
-        const newCreditBalance = parseFloat(customer.credit_balance) - credit_used;
+        const currentCredit = parseFloat(customer.credit_balance);
+        if (currentCredit < credit_used) {
+          throw new BusinessError(
+            `Cliente no tiene suficiente crédito. Disponible: $${formatDecimal(currentCredit)}, Solicitado: $${formatDecimal(credit_used)}`,
+            'E414'
+          );
+        }
+        const newCreditBalance = currentCredit - credit_used;
         await customer.update({ credit_balance: newCreditBalance }, { transaction: t });
 
         await CreditTransaction.create({
@@ -404,6 +721,86 @@ exports.create = async (req, res, next) => {
       ]
     });
 
+    // Create audit log entry for sale creation
+    await logSaleCreate(req, sale, t);
+
+    // Log discount application if applicable
+    if (saleDiscount > 0 && actualDiscountType !== 'WHOLESALE') {
+      await logDiscountApply(
+        req,
+        sale,
+        saleDiscount,
+        actualDiscountPercent,
+        discount_reason,
+        discountApprovedBy,
+        t
+      );
+    }
+
+    // Commit transaction before async operations
+    await t.commit();
+
+    // Get configurable thresholds for this branch
+    const thresholds = await getAlertThresholds(branch_id, ['LARGE_DISCOUNT', 'HIGH_VALUE_SALE']);
+    const largeDiscountThreshold = thresholds.LARGE_DISCOUNT || 15; // Default 15%
+    const highValueThreshold = thresholds.HIGH_VALUE_SALE || 50000; // Default $50,000
+
+    // Create LARGE_DISCOUNT alert if discount exceeds threshold
+    if (actualDiscountPercent > largeDiscountThreshold && actualDiscountType !== 'WHOLESALE') {
+      const largeDiscountAlert = await Alert.create({
+        id: uuidv4(),
+        alert_type: 'LARGE_DISCOUNT',
+        severity: 'MEDIUM',
+        branch_id,
+        user_id: req.user.id,
+        title: `Descuento grande aplicado en ${branch.name}`,
+        message: `Venta ${sale.sale_number}: descuento del ${actualDiscountPercent.toFixed(1)}% ($${saleDiscount.toFixed(2)})${discountApprovedBy ? ' con autorización de supervisor' : ''}. Motivo: ${discount_reason}`,
+        reference_type: 'SALE',
+        reference_id: sale.id
+      });
+
+      // Emit alert to owners via Socket.io
+      if (io) {
+        io.emitToOwners(EVENTS.ALERT_CREATED, {
+          alert_id: largeDiscountAlert.id,
+          type: 'LARGE_DISCOUNT',
+          severity: 'MEDIUM',
+          branch_name: branch.name,
+          sale_number: sale.sale_number,
+          discount_percent: actualDiscountPercent,
+          discount_amount: saleDiscount
+        }, branch_id);
+      }
+    }
+
+    // Create HIGH_VALUE_SALE alert if total exceeds threshold
+    if (totalAmount > highValueThreshold) {
+      const highValueAlert = await Alert.create({
+        id: uuidv4(),
+        alert_type: 'HIGH_VALUE_SALE',
+        severity: 'INFO',
+        branch_id,
+        user_id: req.user.id,
+        title: `Venta de alto valor en ${branch.name}`,
+        message: `Venta ${sale.sale_number} por $${totalAmount.toFixed(2)} supera el umbral de $${highValueThreshold.toFixed(2)}`,
+        reference_type: 'SALE',
+        reference_id: sale.id
+      });
+
+      // Emit alert to owners via Socket.io
+      if (io) {
+        io.emitToOwners(EVENTS.ALERT_CREATED, {
+          alert_id: highValueAlert.id,
+          type: 'HIGH_VALUE_SALE',
+          severity: 'INFO',
+          branch_name: branch.name,
+          sale_number: sale.sale_number,
+          total_amount: totalAmount,
+          threshold: highValueThreshold
+        }, branch_id);
+      }
+    }
+
     // Automatic invoice generation through FactuHoy (async, don't block response)
     setImmediate(async () => {
       try {
@@ -413,6 +810,26 @@ exports.create = async (req, res, next) => {
           sale_id: sale.id,
           error: error.message
         });
+
+        // Create FAILED_INVOICE alert
+        const failedInvoiceAlert = await Alert.create({
+          id: uuidv4(),
+          alert_type: 'FAILED_INVOICE',
+          severity: 'HIGH',
+          branch_id,
+          user_id: req.user.id,
+          title: `Error al generar factura en ${branch.name}`,
+          message: `No se pudo generar la factura para la venta ${sale.sale_number} ($${totalAmount.toFixed(2)}). Error: ${error.message}`,
+          reference_type: 'SALE',
+          reference_id: sale.id
+        });
+
+        // Emit via Socket.io
+        const alertIo = req.app.get('io');
+        if (alertIo) {
+          alertIo.to(`branch_${branch_id}`).emit('ALERT_CREATED', failedInvoiceAlert);
+          alertIo.to('owners').emit('ALERT_CREATED', failedInvoiceAlert);
+        }
       }
     });
 
@@ -452,7 +869,7 @@ exports.voidSale = async (req, res, next) => {
     }
 
     if (sale.status === 'VOIDED') {
-      throw new BusinessError('Sale is already voided', 'E404');
+      throw new BusinessError('Sale is already cancelled', 'E404');
     }
 
     // CRITICAL: Check if session is still open (cannot void sales from closed shifts)
@@ -492,6 +909,16 @@ exports.voidSale = async (req, res, next) => {
       }
       approvedBy = manager.id;
     }
+
+    // Capture old state before voiding
+    const oldSaleState = {
+      status: sale.status,
+      voided_at: sale.voided_at,
+      voided_by: sale.voided_by,
+      void_reason: sale.void_reason,
+      void_approved_by: sale.void_approved_by,
+      total_amount: sale.total_amount
+    };
 
     // Void the sale
     await sale.update({
@@ -567,6 +994,42 @@ exports.voidSale = async (req, res, next) => {
       }
     }
 
+    // Reverse payment allocations (mark as reversed for reconciliation)
+    const salePayments = await SalePayment.findAll({
+      where: { sale_id: sale.id },
+      include: [{ model: PaymentMethod, as: 'payment_method' }]
+    });
+
+    for (const payment of salePayments) {
+      // Create reversal record with negative amount
+      await SalePayment.create({
+        id: uuidv4(),
+        sale_id: sale.id,
+        payment_method_id: payment.payment_method_id,
+        amount: -parseFloat(payment.amount), // Negative amount for reversal
+        reference_number: payment.reference_number
+          ? `VOID-${payment.reference_number}`
+          : `VOID-${sale.sale_number}`,
+        card_last_four: payment.card_last_four,
+        card_brand: payment.card_brand,
+        authorization_code: payment.authorization_code
+          ? `VOID-${payment.authorization_code}`
+          : null,
+        qr_provider: payment.qr_provider,
+        qr_transaction_id: payment.qr_transaction_id
+          ? `VOID-${payment.qr_transaction_id}`
+          : null
+      }, { transaction: t });
+
+      logger.info(`Payment reversed for voided sale`, {
+        sale_id: sale.id,
+        payment_id: payment.id,
+        payment_method: payment.payment_method.code,
+        amount: payment.amount,
+        reversal_amount: -parseFloat(payment.amount)
+      });
+    }
+
     // CRITICAL: Cancel invoice in FactuHoy if already invoiced
     if (sale.invoice) {
       const invoice = sale.invoice;
@@ -608,7 +1071,37 @@ exports.voidSale = async (req, res, next) => {
       }
     }
 
+    // Create Alert record for owner (CRITICAL: Must persist in database)
+    const alert = await Alert.create({
+      id: uuidv4(),
+      alert_type: 'VOIDED_SALE',
+      severity: 'HIGH',
+      branch_id: sale.branch_id,
+      user_id: req.user.id,
+      title: `Venta cancelada en ${sale.branch.name}`,
+      message: `Venta ${sale.sale_number} por $${formatDecimal(sale.total_amount)} fue cancelada por ${req.user.first_name} ${req.user.last_name}. Motivo: ${reason}`,
+      reference_type: 'SALE',
+      reference_id: sale.id
+    }, { transaction: t });
+
+    // Create audit log entry for void operation
+    await logSaleVoid(req, oldSaleState, sale, t);
+
     await t.commit();
+
+    // CRITICAL: Generate credit note asynchronously for voided invoiced sales
+    // This must happen AFTER the transaction commits to ensure sale is voided first
+    if (sale.invoice && sale.invoice.status === 'ISSUED' && sale.invoice.cae) {
+      // Call async credit note generation (don't await - fire and forget)
+      generateCreditNoteForVoidedSale(sale.invoice.id, sale.id, reason, req.user.id)
+        .catch(error => {
+          logger.error(`Failed to generate credit note for voided sale ${sale.id}`, {
+            error: error.message,
+            invoice_id: sale.invoice.id,
+            sale_id: sale.id
+          });
+        });
+    }
 
     // Emit real-time event
     const io = req.app.get('io');
@@ -620,16 +1113,20 @@ exports.voidSale = async (req, res, next) => {
         reason
       });
 
-      // Alert owners
+      // Alert owners with persisted alert data
       io.emitToOwners(EVENTS.ALERT_CREATED, {
-        type: 'VOIDED_SALE',
+        alert_id: alert.id,
+        alert_type: 'VOIDED_SALE',
         severity: 'HIGH',
-        title: `Venta anulada en ${sale.branch.name}`,
-        message: `Venta ${sale.sale_number} por $${sale.total_amount} fue anulada. Motivo: ${reason}`
+        branch_id: sale.branch_id,
+        title: alert.title,
+        message: alert.message,
+        reference_type: 'SALE',
+        reference_id: sale.id
       }, sale.branch_id);
     }
 
-    return success(res, sale, 'Sale voided successfully');
+    return success(res, sale, 'Sale cancelled successfully');
   } catch (error) {
     await t.rollback();
     next(error);
@@ -727,7 +1224,7 @@ exports.getReceipt = async (req, res, next) => {
 exports.issueInvoice = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const {
+    let {
       invoice_type_code, customer_name, customer_document_type,
       customer_document_number, customer_tax_condition, customer_address
     } = req.body;
@@ -747,15 +1244,54 @@ exports.issueInvoice = async (req, res, next) => {
       throw new BusinessError('Invoice already issued for this sale', 'E405');
     }
 
+    // Apply branch default invoice type if not explicitly provided
+    if (!invoice_type_code && sale.branch.default_invoice_type) {
+      invoice_type_code = sale.branch.default_invoice_type;
+      logger.info(`Using branch default invoice type: ${invoice_type_code} for sale ${sale.id}`);
+    }
+
+    // Fallback to 'B' if still not set
+    if (!invoice_type_code) {
+      invoice_type_code = 'B';
+      logger.info(`Using fallback invoice type 'B' for sale ${sale.id}`);
+    }
+
     // Get invoice type
     const invoiceType = await InvoiceType.findOne({ where: { code: invoice_type_code } });
     if (!invoiceType) {
       throw new NotFoundError('Invoice type not found');
     }
 
-    // Check if Factura A requires CUIT
-    if (invoice_type_code === 'A' && !customer_document_number) {
-      throw new BusinessError('Factura A requires customer CUIT', 'E202');
+    // Comprehensive validation for Type A invoices
+    if (invoice_type_code === 'A') {
+      // Validate CUIT exists
+      if (!customer_document_number) {
+        throw new BusinessError('Factura A requires customer CUIT', 'E202');
+      }
+
+      // Validate CUIT format: 11 digits
+      const cuitWithoutDashes = customer_document_number.replace(/-/g, '');
+      if (!/^\d{11}$/.test(cuitWithoutDashes)) {
+        throw new BusinessError(
+          'El CUIT debe contener 11 dígitos numéricos (formato: XX-XXXXXXXX-X)',
+          'E412'
+        );
+      }
+
+      // Validate tax condition exists
+      if (!customer_tax_condition || customer_tax_condition.trim().length === 0) {
+        throw new BusinessError('Factura A requires customer tax condition', 'E413');
+      }
+
+      // Validate address exists
+      if (!customer_address || customer_address.trim().length === 0) {
+        throw new BusinessError('Factura A requires customer billing address', 'E414');
+      }
+
+      // Validate customer name exists
+      if (!customer_name || customer_name.trim().length === 0) {
+        throw new BusinessError('Factura A requires customer name/company name', 'E415');
+      }
     }
 
     // TODO: Integrate with FactuHoy API here
@@ -995,6 +1531,14 @@ async function generateInvoiceForSale(saleId, branchId, customerId, userId, invo
     // Override customer data if provided (for Invoice Type A)
     if (invoiceOverride) {
       if (invoiceOverride.customer_cuit) {
+        // Validate CUIT format: XX-XXXXXXXX-X (11 digits total)
+        const cuitWithoutDashes = invoiceOverride.customer_cuit.replace(/-/g, '');
+        if (!/^\d{11}$/.test(cuitWithoutDashes)) {
+          throw new BusinessError(
+            'El CUIT debe contener 11 dígitos numéricos (formato: XX-XXXXXXXX-X)',
+            'E412'
+          );
+        }
         customerData.document_number = invoiceOverride.customer_cuit;
         customerData.document_type = 'CUIT'; // CUIT implies document type is CUIT
       }
@@ -1068,13 +1612,33 @@ async function generateInvoiceForSale(saleId, branchId, customerId, userId, invo
     const result = await factuHoyService.createInvoice(invoiceData);
 
     if (result.success) {
+      // Generate local PDF as fallback if FactuHoy doesn't provide one
+      let pdfUrl = result.afip_response?.pdf_url || null;
+
+      if (!pdfUrl) {
+        try {
+          const pdfService = require('../services/pdf.service');
+          const localPdfPath = await pdfService.generateInvoicePDF({
+            invoice,
+            sale,
+            branch,
+            items: sale.sale_items,
+            invoiceType: invoiceTypeRecord
+          });
+          pdfUrl = localPdfPath;
+          logger.info(`Generated local PDF fallback for invoice ${invoice.id}`);
+        } catch (pdfError) {
+          logger.error(`Failed to generate local PDF for invoice ${invoice.id}:`, pdfError);
+        }
+      }
+
       // Update invoice with CAE and success status
       await invoice.update({
         cae: result.cae,
         cae_expiration_date: result.cae_expiration,
         factuhoy_id: result.invoice_number?.toString() || null,
         factuhoy_response: result.afip_response,
-        pdf_url: result.afip_response?.pdf_url || null,
+        pdf_url: pdfUrl,
         status: 'ISSUED',
         issued_at: new Date(),
         error_message: null
@@ -1107,6 +1671,33 @@ async function generateInvoiceForSale(saleId, branchId, customerId, userId, invo
         logger.info(`Invoice ${invoice.id} can be retried manually - marked as PENDING`);
       } else {
         logger.warn(`Invoice ${invoice.id} marked as FAILED - manual intervention required`);
+      }
+
+      // Create alert for failed invoice
+      const Alert = require('../database/models').Alert;
+      const sale = await Sale.findByPk(saleId);
+      await Alert.create({
+        id: uuidv4(),
+        alert_type: 'FAILED_INVOICE',
+        severity: result.retryable ? 'MEDIUM' : 'HIGH',
+        branch_id: sale?.branch_id,
+        user_id: sale?.created_by,
+        title: result.retryable ? `Factura ${invoice.invoice_number || invoice.id} pendiente de reintento` : `Factura ${invoice.invoice_number || invoice.id} FALLÓ`,
+        message: `Error al generar factura: ${result.error}. ${result.retryable ? 'Se puede reintentar manualmente.' : 'Requiere intervención manual.'}`,
+        reference_type: 'INVOICE',
+        reference_id: invoice.id
+      });
+
+      // Emit alert via Socket.io
+      const io = global.io;
+      if (io && sale) {
+        io.emitToBranch(sale.branch_id, 'ALERT_CREATED', {
+          alert_type: 'FAILED_INVOICE',
+          severity: result.retryable ? 'MEDIUM' : 'HIGH',
+          invoice_id: invoice.id,
+          sale_id: saleId,
+          error: result.error
+        });
       }
     }
 

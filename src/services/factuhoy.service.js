@@ -324,6 +324,120 @@ class FactuHoyService {
 
     return results;
   }
+
+  /**
+   * Create a credit note through FactuHoy API
+   * Credit notes cancel or partially refund an original invoice
+   */
+  async createCreditNote(creditNoteData) {
+    try {
+      const payload = this.formatCreditNotePayload(creditNoteData);
+
+      logger.info('Creating FactuHoy credit note:', {
+        originalInvoice: creditNoteData.original_invoice_number,
+        creditNoteType: creditNoteData.credit_note_type
+      });
+
+      const response = await this.client.post('/invoices', payload);
+
+      if (response.data.success) {
+        return {
+          success: true,
+          cae: response.data.cae,
+          cae_expiration: response.data.cae_vencimiento,
+          credit_note_number: response.data.numero_comprobante,
+          afip_response: response.data,
+        };
+      } else {
+        return {
+          success: false,
+          error: response.data.error || 'Unknown error from FactuHoy',
+          afip_response: response.data,
+        };
+      }
+    } catch (error) {
+      const isRetryable = this.isRetryableError(error);
+
+      return {
+        success: false,
+        error: error.response?.data?.message || error.message,
+        retryable: isRetryable,
+        afip_response: error.response?.data,
+      };
+    }
+  }
+
+  /**
+   * Format credit note data for FactuHoy API
+   * Credit notes use same format as invoices but with NC type codes
+   */
+  formatCreditNotePayload(creditNoteData) {
+    const {
+      credit_note_type,
+      point_of_sale,
+      customer,
+      items,
+      totals,
+      original_invoice,
+      reason
+    } = creditNoteData;
+
+    // Map credit note type to FactuHoy format (already in formatInvoicePayload)
+    const tipoComprobante = {
+      'NC_A': 3,  // Nota de Crédito A
+      'NC_B': 8,  // Nota de Crédito B
+      'NC_C': 13, // Nota de Crédito C
+    };
+
+    // Map document type
+    const tipoDocumento = {
+      'DNI': 96,
+      'CUIT': 80,
+      'CUIL': 86,
+      'PASSPORT': 94,
+      'OTHER': 99,
+    };
+
+    const payload = {
+      tipo_comprobante: tipoComprobante[credit_note_type] || 8,
+      punto_venta: parseInt(point_of_sale) || 1,
+      concepto: 1, // Products
+      tipo_documento: tipoDocumento[customer?.document_type] || 99,
+      documento: customer?.document_number || '0',
+      nombre: customer?.name || 'Consumidor Final',
+      // Address required for Credit Note A
+      ...(credit_note_type === 'NC_A' && {
+        domicilio: customer?.address || '',
+      }),
+      // Reference to original invoice
+      ...(original_invoice && {
+        comprobantes_asociados: [{
+          tipo: this.getInvoiceTypeCode(original_invoice.type),
+          punto_venta: parseInt(original_invoice.point_of_sale),
+          numero: parseInt(original_invoice.number),
+        }]
+      }),
+      items: items.map((item) => ({
+        descripcion: item.description,
+        cantidad: item.quantity,
+        unidad: 7, // Units
+        precio_unitario: item.unit_price,
+        iva: this.mapIvaRate(item.tax_rate || 21),
+        importe: item.total,
+      })),
+      subtotal: totals.subtotal,
+      iva_21: totals.tax_21 || 0,
+      iva_10_5: totals.tax_10_5 || 0,
+      iva_27: totals.tax_27 || 0,
+      total: totals.total,
+      moneda: 'PES', // Argentine Peso
+      cotizacion: 1,
+      // Optional: Reason for credit note
+      ...(reason && { observaciones: reason }),
+    };
+
+    return payload;
+  }
 }
 
 module.exports = new FactuHoyService();

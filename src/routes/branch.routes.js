@@ -8,6 +8,7 @@ const {
   stringField,
   booleanField,
   integerField,
+  decimalField,
   enumField,
   paginationQuery
 } = require('../middleware/validate');
@@ -58,7 +59,7 @@ router.post(
     stringField('midday_closing_time', { required: false }),
     stringField('evening_closing_time', { required: false }),
     booleanField('has_shift_change'),
-    integerField('factuhoy_point_of_sale', { min: 1, required: false }),
+    integerField('factuhoy_point_of_sale', { min: 1, max: 9999, required: false }),
     enumField('default_invoice_type', ['A', 'B', 'C'], false),
     enumField('device_type', ['PC', 'TABLET'], false),
     stringField('printer_model', { maxLength: 100, required: false }),
@@ -90,8 +91,17 @@ router.put(
     stringField('midday_closing_time', { required: false }),
     stringField('evening_closing_time', { required: false }),
     booleanField('has_shift_change'),
-    integerField('factuhoy_point_of_sale', { min: 1, required: false }),
+    integerField('factuhoy_point_of_sale', { min: 1, max: 9999, required: false }),
     enumField('default_invoice_type', ['A', 'B', 'C'], false),
+    // POS Configuration fields
+    stringField('receipt_footer', { required: false }),
+    booleanField('auto_print_receipt'),
+    booleanField('require_customer'),
+    booleanField('enable_discounts'),
+    decimalField('max_discount_percent', { min: 0, max: 100, required: false }),
+    stringField('tax_id', { maxLength: 20, required: false }),
+    stringField('tax_condition', { maxLength: 50, required: false }),
+    // Hardware fields
     enumField('device_type', ['PC', 'TABLET'], false),
     stringField('printer_model', { maxLength: 100, required: false }),
     enumField('printer_type', ['THERMAL', 'LASER', 'PDF'], false),

@@ -59,8 +59,9 @@ module.exports = {
         defaultValue: true
       },
       pin_code: {
-        type: Sequelize.STRING(6),
-        allowNull: true
+        type: Sequelize.STRING(255),
+        allowNull: true,
+        comment: 'Hashed PIN code for quick login (bcrypt)'
       },
       last_login_at: {
         type: Sequelize.DATE,

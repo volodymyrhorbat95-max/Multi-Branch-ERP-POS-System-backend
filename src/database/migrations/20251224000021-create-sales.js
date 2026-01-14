@@ -79,6 +79,38 @@ module.exports = {
         type: Sequelize.DECIMAL(5, 2),
         defaultValue: 0
       },
+      discount_type: {
+        type: Sequelize.STRING(20),
+        allowNull: true,
+        comment: 'Type of discount applied: PERCENT, FIXED, WHOLESALE, or null'
+      },
+      discount_reason: {
+        type: Sequelize.STRING(255),
+        allowNull: true,
+        comment: 'Reason for applying discount (required for manual discounts)'
+      },
+      discount_applied_by: {
+        type: Sequelize.UUID,
+        allowNull: true,
+        references: {
+          model: 'users',
+          key: 'id'
+        },
+        onUpdate: 'CASCADE',
+        onDelete: 'SET NULL',
+        comment: 'User who applied the discount'
+      },
+      discount_approved_by: {
+        type: Sequelize.UUID,
+        allowNull: true,
+        references: {
+          model: 'users',
+          key: 'id'
+        },
+        onUpdate: 'CASCADE',
+        onDelete: 'SET NULL',
+        comment: 'Manager who approved discount (if exceeded user limit)'
+      },
       tax_amount: {
         type: Sequelize.DECIMAL(12, 2),
         defaultValue: 0
@@ -165,6 +197,11 @@ module.exports = {
         type: Sequelize.STRING(20),
         defaultValue: 'SYNCED'
       },
+      invoice_override: {
+        type: Sequelize.JSONB,
+        allowNull: true,
+        comment: 'Invoice override data for offline sales (invoice_type, customer_cuit, etc.)'
+      },
       created_at: {
         type: Sequelize.DATE,
         allowNull: false,
@@ -183,6 +220,7 @@ module.exports = {
     await queryInterface.addIndex('sales', ['created_at']);
     await queryInterface.addIndex('sales', ['status']);
     await queryInterface.addIndex('sales', ['local_id']);
+    await queryInterface.addIndex('sales', ['discount_applied_by']);
   },
 
   async down(queryInterface) {

@@ -12,6 +12,7 @@ const {
   integerField,
   enumField,
   paginationQuery,
+  denominationBreakdown,
   query
 } = require('../middleware/validate');
 
@@ -82,7 +83,17 @@ router.put(
 // ===== Register Session Routes =====
 
 /**
- * @route   GET /api/v1/registers/sessions
+ * @route   GET /api/v1/registers/sessions/my-session
+ * @desc    Get current user's active session
+ * @access  Private
+ */
+router.get(
+  '/sessions/my-session',
+  registerController.getMyCashierSession
+);
+
+/**
+ * @route   GET /api/v1/registers/sessions/list
  * @desc    Get register sessions with filters
  * @access  Private
  */
@@ -123,6 +134,7 @@ router.post(
     decimalField('opening_cash', { min: 0 }),
     stringField('opening_notes', { required: false }),
     stringField('local_id', { maxLength: 50, required: false }),
+    ...denominationBreakdown('opening_denominations', false),
     validate
   ],
   registerController.openSession
@@ -143,6 +155,7 @@ router.post(
     decimalField('declared_qr', { min: 0 }),
     decimalField('declared_transfer', { min: 0 }),
     stringField('closing_notes', { required: false }),
+    ...denominationBreakdown('closing_denominations', false),
     validate
   ],
   registerController.closeSession
@@ -156,6 +169,7 @@ router.post(
 router.post(
   '/sessions/:sessionId/reopen',
   [
+    authenticate,
     uuidParam('sessionId'),
     stringField('reason', { minLength: 1, maxLength: 500 }),
     stringField('manager_pin', { minLength: 4, maxLength: 6 }),
@@ -163,6 +177,23 @@ router.post(
   ],
   verifyManagerPin('can_reopen_closing'),
   registerController.reopenSession
+);
+
+/**
+ * @route   POST /api/v1/registers/sessions/:sessionId/force-close
+ * @desc    Force close a session (manager only)
+ * @access  Private (requires manager authorization)
+ */
+router.post(
+  '/sessions/:sessionId/force-close',
+  [
+    uuidParam('sessionId'),
+    stringField('reason', { minLength: 1, maxLength: 500 }),
+    stringField('manager_pin', { minLength: 4, maxLength: 6 }),
+    validate
+  ],
+  verifyManagerPin('canCloseRegister'),
+  registerController.forceCloseSession
 );
 
 /**

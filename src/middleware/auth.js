@@ -57,6 +57,8 @@ const authenticate = async (req, res, next) => {
       canManageSuppliers: user.role.can_manage_suppliers,
       canManageProducts: user.role.can_manage_products,
       canIssueInvoiceA: user.role.can_issue_invoice_a,
+      canManageExpenses: user.role.can_manage_expenses,
+      canApproveExpenses: user.role.can_approve_expenses,
       maxDiscountPercent: parseFloat(user.role.max_discount_percent)
     };
 
@@ -211,7 +213,9 @@ const verifyPin = async (req, res, next) => {
       throw new UnauthorizedError('PIN not set. Please set a PIN first.', 'E106');
     }
 
-    if (user.pin_code !== pin) {
+    // Validate PIN using bcrypt
+    const isPinValid = await user.validatePin(pin);
+    if (!isPinValid) {
       throw new UnauthorizedError('Invalid PIN', 'E107');
     }
 
@@ -224,6 +228,7 @@ const verifyPin = async (req, res, next) => {
 /**
  * Verify manager PIN for authorization
  * Looks up manager by PIN and validates permission
+ * Note: Since PINs are hashed, we need to check all active users with PINs
  */
 const verifyManagerPin = (requiredPermission) => {
   return async (req, res, next) => {
@@ -234,11 +239,24 @@ const verifyManagerPin = (requiredPermission) => {
         throw new UnauthorizedError('Manager PIN required for authorization', 'E106');
       }
 
-      // Find user with this PIN
-      const manager = await User.findOne({
-        where: { pin_code: manager_pin, is_active: true },
+      // Get all active users with PINs and the required permission
+      const potentialManagers = await User.findAll({
+        where: {
+          is_active: true,
+          pin_code: { [require('sequelize').Op.ne]: null }
+        },
         include: [{ model: Role, as: 'role' }]
       });
+
+      // Find the manager by validating PIN with bcrypt
+      let manager = null;
+      for (const user of potentialManagers) {
+        const isPinValid = await user.validatePin(manager_pin);
+        if (isPinValid) {
+          manager = user;
+          break;
+        }
+      }
 
       if (!manager) {
         throw new UnauthorizedError('Invalid manager PIN', 'E107');

@@ -98,7 +98,7 @@ router.get(
     query('branch_id').optional().isUUID(4),
     validate
   ],
-  async (_req, res) => res.status(501).json({ message: 'Not implemented' })
+  syncController.getConflicts
 );
 
 /**

@@ -11,8 +11,10 @@ module.exports = (sequelize) => {
       type: DataTypes.ENUM(
         'VOIDED_SALE',
         'CASH_DISCREPANCY',
+        'LOW_PETTY_CASH',
         'LOW_STOCK',
         'LATE_CLOSING',
+        'AFTER_HOURS_CLOSING',
         'REOPEN_REGISTER',
         'FAILED_INVOICE',
         'LARGE_DISCOUNT',

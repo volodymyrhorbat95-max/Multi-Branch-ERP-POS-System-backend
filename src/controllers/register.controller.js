@@ -9,6 +9,7 @@ const { NotFoundError, BusinessError } = require('../middleware/errorHandler');
 const { parsePagination, generateSessionNumber, getBusinessDate, isPastClosingTime, formatDecimal } = require('../utils/helpers');
 const { EVENTS } = require('../socket');
 const logger = require('../utils/logger');
+const { logSessionOpen, logSessionClose, logSessionReopen, logCashWithdrawal } = require('../utils/auditLogger');
 
 // ===== Helper Functions =====
 
@@ -193,6 +194,37 @@ exports.getCurrentSession = async (req, res, next) => {
 };
 
 /**
+ * Get current user's active session (cashier session)
+ * GET /api/v1/registers/sessions/my-session
+ */
+exports.getMyCashierSession = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+
+    const session = await RegisterSession.findOne({
+      where: {
+        opened_by: userId,
+        status: 'OPEN'
+      },
+      include: [
+        { model: CashRegister, as: 'register', attributes: ['register_number', 'name'] },
+        { model: Branch, as: 'branch', attributes: ['name', 'code'] },
+        { model: User, as: 'opener', attributes: ['first_name', 'last_name'] }
+      ],
+      order: [['opened_at', 'DESC']]
+    });
+
+    if (!session) {
+      return success(res, null, 'No active session for current user');
+    }
+
+    return success(res, session);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
  * Open a new register session
  * POST /api/v1/registers/:registerId/open
  */
@@ -230,6 +262,29 @@ exports.openSession = async (req, res, next) => {
       }
     }
 
+    // Validate opening cash meets petty cash requirement
+    const pettyCashAmount = parseFloat(register.branch.petty_cash_amount || 0);
+    let pettyCashWarning = null;
+
+    if (opening_cash < pettyCashAmount) {
+      pettyCashWarning = {
+        type: 'PETTY_CASH_LOW',
+        message: `Atención: El efectivo de apertura ($${formatDecimal(opening_cash)}) es menor que el fondo de caja mínimo ($${formatDecimal(pettyCashAmount)}). Asegúrese de que hay suficiente cambio.`,
+        severity: 'warning',
+        opening_cash,
+        petty_cash_required: pettyCashAmount,
+        deficit: pettyCashAmount - opening_cash
+      };
+
+      logger.warn('Register opened with insufficient petty cash', {
+        register_id: registerId,
+        branch_id: register.branch_id,
+        opening_cash,
+        petty_cash_amount: pettyCashAmount,
+        deficit: pettyCashAmount - opening_cash
+      });
+    }
+
     const businessDate = getBusinessDate();
 
     const session = await RegisterSession.create({
@@ -257,6 +312,9 @@ exports.openSession = async (req, res, next) => {
       synced_at: new Date()
     });
 
+    // Create audit log entry for session open
+    await logSessionOpen(req, session, null);
+
     // Emit real-time event
     const io = req.app.get('io');
     if (io) {
@@ -264,11 +322,18 @@ exports.openSession = async (req, res, next) => {
         session_id: session.id,
         register_name: register.name,
         opened_by: `${req.user.first_name} ${req.user.last_name}`,
-        shift_type
+        shift_type,
+        petty_cash_warning: pettyCashWarning
       });
     }
 
-    return created(res, session);
+    // Return session with warning if applicable
+    const responseData = {
+      ...session.toJSON(),
+      petty_cash_warning: pettyCashWarning
+    };
+
+    return created(res, responseData, pettyCashWarning ? 'Session opened with petty cash warning' : 'Session opened successfully');
   } catch (error) {
     next(error);
   }
@@ -367,12 +432,139 @@ exports.closeSession = async (req, res, next) => {
     // Subtract withdrawals from expected cash
     expected_cash -= totalWithdrawals;
 
+    // Calculate loyalty totals from sales
+    let total_points_earned = 0;
+    let total_points_redeemed = 0;
+    let total_credit_used = 0;
+    let total_credit_given = 0;
+
+    for (const sale of sales) {
+      total_points_earned += sale.points_earned || 0;
+      total_points_redeemed += sale.points_redeemed || 0;
+      total_credit_used += parseFloat(sale.credit_used || 0);
+      total_credit_given += parseFloat(sale.change_as_credit || 0);
+    }
+
     // Calculate discrepancies
     const discrepancy_cash = declared_cash - expected_cash;
     const discrepancy_card = declared_card - expected_card;
     const discrepancy_qr = declared_qr - expected_qr;
     const discrepancy_transfer = declared_transfer - expected_transfer;
     const total_discrepancy = discrepancy_cash + discrepancy_card + discrepancy_qr + discrepancy_transfer;
+
+    // Check petty cash requirement (declared cash should keep petty cash amount)
+    const branch = await Branch.findByPk(session.branch_id);
+    const pettyCashAmount = parseFloat(branch.petty_cash_amount || 0);
+    let pettyCashWarning = null;
+
+    if (declared_cash < pettyCashAmount) {
+      pettyCashWarning = {
+        type: 'PETTY_CASH_LOW',
+        message: `ATENCIÓN: El efectivo en caja ($${formatDecimal(declared_cash)}) es menor que el fondo de reserva inicial ($${formatDecimal(pettyCashAmount)}). Debe dejar al menos $${formatDecimal(pettyCashAmount)} para el próximo turno.`,
+        severity: 'error',
+        declared_cash,
+        petty_cash_required: pettyCashAmount,
+        deficit: pettyCashAmount - declared_cash
+      };
+
+      logger.error('Register closing with insufficient petty cash', {
+        session_id: sessionId,
+        branch_id: session.branch_id,
+        declared_cash,
+        petty_cash_amount: pettyCashAmount,
+        deficit: pettyCashAmount - declared_cash
+      });
+
+      // Create alert for owner
+      await Alert.create({
+        id: uuidv4(),
+        alert_type: 'LOW_PETTY_CASH',
+        severity: 'HIGH',
+        branch_id: session.branch_id,
+        user_id: req.user.id,
+        title: 'Efectivo insuficiente en cierre',
+        message: `Cierre de caja con efectivo ($${formatDecimal(declared_cash)}) menor al fondo de reserva ($${formatDecimal(pettyCashAmount)}). Déficit: $${formatDecimal(pettyCashAmount - declared_cash)}`,
+        reference_type: 'REGISTER_SESSION',
+        reference_id: sessionId
+      }, { transaction: t });
+    }
+
+    // Check if closing is after expected hours
+    let afterHoursWarning = null;
+    const closingTime = new Date();
+    const closingHour = closingTime.getHours();
+    const closingMinute = closingTime.getMinutes();
+    const closingTimeString = `${String(closingHour).padStart(2, '0')}:${String(closingMinute).padStart(2, '0')}:00`;
+
+    // Determine expected closing time based on shift type
+    let expectedClosingTime = null;
+    if (session.shift_type === 'MORNING') {
+      expectedClosingTime = branch.midday_closing_time; // e.g., '14:00:00' or '14:30:00'
+    } else if (session.shift_type === 'AFTERNOON') {
+      expectedClosingTime = branch.evening_closing_time; // e.g., '20:00:00' or '20:30:00'
+    } else if (session.shift_type === 'FULL_DAY') {
+      expectedClosingTime = branch.evening_closing_time;
+    }
+
+    // Compare closing time with expected time (allow 30 minute grace period)
+    if (expectedClosingTime) {
+      const [expectedHour, expectedMinute] = expectedClosingTime.split(':').map(Number);
+      const expectedMinutesFromMidnight = expectedHour * 60 + expectedMinute;
+      const actualMinutesFromMidnight = closingHour * 60 + closingMinute;
+      const gracePeriodMinutes = 30;
+      const minutesDifference = actualMinutesFromMidnight - expectedMinutesFromMidnight;
+
+      // Alert if closing is more than 30 minutes after expected time
+      if (minutesDifference > gracePeriodMinutes) {
+        const hoursLate = Math.floor(minutesDifference / 60);
+        const minutesLate = minutesDifference % 60;
+        const lateString = hoursLate > 0
+          ? `${hoursLate} hora(s) ${minutesLate} minuto(s)`
+          : `${minutesLate} minuto(s)`;
+
+        afterHoursWarning = {
+          type: 'AFTER_HOURS_CLOSING',
+          message: `Cierre realizado fuera del horario esperado. Hora de cierre: ${closingTimeString}, hora esperada: ${expectedClosingTime}`,
+          severity: 'warning',
+          closing_time: closingTimeString,
+          expected_closing_time: expectedClosingTime,
+          minutes_late: minutesDifference,
+          shift_type: session.shift_type
+        };
+
+        logger.warn('Register closed after expected hours', {
+          session_id: sessionId,
+          branch_id: session.branch_id,
+          shift_type: session.shift_type,
+          closing_time: closingTimeString,
+          expected_time: expectedClosingTime,
+          minutes_late: minutesDifference
+        });
+
+        // Create alert for owner
+        const afterHoursAlert = await Alert.create({
+          id: uuidv4(),
+          alert_type: 'AFTER_HOURS_CLOSING',
+          severity: 'MEDIUM',
+          branch_id: session.branch_id,
+          user_id: req.user.id,
+          title: `Cierre fuera de horario en ${branch.name}`,
+          message: `Sesión ${session.session_number} cerrada ${lateString} tarde. Hora de cierre: ${closingTimeString}, hora esperada: ${expectedClosingTime}`,
+          reference_type: 'REGISTER_SESSION',
+          reference_id: sessionId
+        }, { transaction: t });
+
+        // Store alert for WebSocket emission after commit
+        afterHoursWarning.alertId = afterHoursAlert.id;
+      }
+    }
+
+    // Capture old state before closing
+    const oldSessionState = {
+      status: session.status,
+      closed_at: session.closed_at,
+      closed_by: session.closed_by
+    };
 
     // Update session with closing data
     await session.update({
@@ -425,38 +617,18 @@ exports.closeSession = async (req, res, next) => {
       total_qr: expected_qr,
       total_transfer: expected_transfer,
       total_discrepancy: total_discrepancy,
-      transaction_count: sales.length
+      transaction_count: sales.length,
+      total_credit_used: total_credit_used,
+      total_points_redeemed: total_points_redeemed
     }, { transaction: t });
 
+    // Note: total_points_earned and total_credit_given are not in DailyReport schema
+    // If needed for reporting, they should be added to the migration
+
+    // Create audit log entry for session close
+    await logSessionClose(req, oldSessionState, session, t);
+
     await t.commit();
-
-    // Check petty cash fund - alert if cash is below petty cash amount
-    const pettyCashAmount = parseFloat(session.branch.petty_cash_amount || 0);
-    if (pettyCashAmount > 0 && expected_cash < pettyCashAmount) {
-      await Alert.create({
-        id: uuidv4(),
-        alert_type: 'LOW_PETTY_CASH',
-        severity: 'HIGH',
-        branch_id: session.branch_id,
-        user_id: req.user.id,
-        title: 'Fondo de caja bajo',
-        message: `Efectivo en caja ($${formatDecimal(expected_cash)}) está por debajo del fondo de caja configurado ($${formatDecimal(pettyCashAmount)}). Retiros totales: $${formatDecimal(totalWithdrawals)}`,
-        reference_type: 'SESSION',
-        reference_id: session.id
-      });
-
-      // Emit alert to owners
-      const io = req.app.get('io');
-      if (io) {
-        io.emitToOwners(EVENTS.ALERT_CREATED, {
-          type: 'LOW_PETTY_CASH',
-          severity: 'HIGH',
-          branch_name: session.branch.name,
-          current_cash: expected_cash,
-          petty_cash_amount: pettyCashAmount
-        }, session.branch_id);
-      }
-    }
 
     // Create alert if significant discrepancy
     if (Math.abs(total_discrepancy) > 100) {
@@ -491,14 +663,31 @@ exports.closeSession = async (req, res, next) => {
         session_id: session.id,
         register_name: session.register.name,
         closed_by: `${req.user.first_name} ${req.user.last_name}`,
-        has_discrepancy: Math.abs(total_discrepancy) > 0
+        has_discrepancy: Math.abs(total_discrepancy) > 0,
+        petty_cash_warning: pettyCashWarning,
+        after_hours_warning: afterHoursWarning
       });
+
+      // Emit after-hours closing alert to owners if applicable
+      if (afterHoursWarning && afterHoursWarning.alertId) {
+        io.emitToOwners(EVENTS.ALERT_CREATED, {
+          type: 'AFTER_HOURS_CLOSING',
+          severity: 'MEDIUM',
+          branch_name: session.branch.name,
+          closing_time: afterHoursWarning.closing_time,
+          expected_time: afterHoursWarning.expected_closing_time,
+          minutes_late: afterHoursWarning.minutes_late,
+          alert_id: afterHoursWarning.alertId
+        }, session.branch_id);
+      }
     }
 
     return success(res, {
       ...session.toJSON(),
       sales_count: sales.length,
-      sales_total: sales.reduce((sum, s) => sum + parseFloat(s.total_amount), 0)
+      sales_total: sales.reduce((sum, s) => sum + parseFloat(s.total_amount), 0),
+      petty_cash_warning: pettyCashWarning,
+      after_hours_warning: afterHoursWarning
     });
   } catch (error) {
     await t.rollback();
@@ -511,21 +700,34 @@ exports.closeSession = async (req, res, next) => {
  * POST /api/v1/registers/sessions/:sessionId/reopen
  */
 exports.reopenSession = async (req, res, next) => {
+  const t = await sequelize.transaction();
+
   try {
     const { sessionId } = req.params;
     const { reason } = req.body;
 
     const session = await RegisterSession.findByPk(sessionId, {
-      include: [{ model: Branch, as: 'branch' }]
+      include: [{ model: Branch, as: 'branch' }],
+      transaction: t
     });
 
     if (!session) {
+      await t.rollback();
       throw new NotFoundError('Session not found');
     }
 
     if (session.status !== 'CLOSED') {
+      await t.rollback();
       throw new BusinessError('Only closed sessions can be reopened', 'E402');
     }
+
+    // Store old state for audit
+    const oldSessionState = {
+      status: session.status,
+      reopened_at: session.reopened_at,
+      reopened_by: session.reopened_by,
+      reopen_reason: session.reopen_reason
+    };
 
     // Update session
     await session.update({
@@ -533,10 +735,10 @@ exports.reopenSession = async (req, res, next) => {
       reopened_by: req.authorized_by?.id || req.user.id,
       reopened_at: new Date(),
       reopen_reason: reason
-    });
+    }, { transaction: t });
 
     // Create alert
-    await Alert.create({
+    const reopenAlert = await Alert.create({
       id: uuidv4(),
       alert_type: 'REOPEN_REGISTER',
       severity: 'HIGH',
@@ -546,10 +748,204 @@ exports.reopenSession = async (req, res, next) => {
       message: `Sesión ${session.session_number} fue reabierta. Motivo: ${reason}`,
       reference_type: 'SESSION',
       reference_id: session.id
+    }, { transaction: t });
+
+    // CRITICAL: Log audit trail
+    await logSessionReopen(req, oldSessionState, session, t);
+
+    await t.commit();
+
+    logger.info(`Session ${session.session_number} reopened by ${req.user.email}`, {
+      session_id: session.id,
+      reopened_by: req.authorized_by?.id || req.user.id,
+      reason
     });
+
+    // Emit alert to owners via WebSocket
+    const io = req.app.get('io');
+    if (io) {
+      io.emitToOwners(EVENTS.ALERT_CREATED, {
+        alert_id: reopenAlert.id,
+        type: 'REOPEN_REGISTER',
+        severity: 'HIGH',
+        branch_name: session.branch.name,
+        session_number: session.session_number,
+        reason: reason,
+        reopened_by: req.user.first_name + ' ' + req.user.last_name
+      }, session.branch_id);
+    }
 
     return success(res, session);
   } catch (error) {
+    await t.rollback();
+    next(error);
+  }
+};
+
+/**
+ * Force close a session (manager only)
+ * POST /api/v1/registers/sessions/:sessionId/force-close
+ */
+exports.forceCloseSession = async (req, res, next) => {
+  const t = await sequelize.transaction();
+
+  try {
+    const { sessionId } = req.params;
+    const { reason } = req.body;
+
+    const session = await RegisterSession.findByPk(sessionId, {
+      include: [
+        { model: Branch, as: 'branch' },
+        { model: CashRegister, as: 'register' }
+      ]
+    });
+
+    if (!session) {
+      throw new NotFoundError('Session not found');
+    }
+
+    if (session.status !== 'OPEN') {
+      throw new BusinessError('Only open sessions can be force closed', 'E402');
+    }
+
+    // Force close with zero declared amounts (manager takes responsibility)
+    const declared_cash = 0;
+    const declared_card = 0;
+    const declared_qr = 0;
+    const declared_transfer = 0;
+
+    // Calculate expected amounts from sales
+    const sales = await Sale.findAll({
+      where: { session_id: sessionId, status: 'COMPLETED' },
+      include: [{
+        model: SalePayment,
+        as: 'payments',
+        include: [{ model: PaymentMethod, as: 'payment_method' }]
+      }]
+    });
+
+    // Get withdrawals
+    const withdrawals = await CashWithdrawal.findAll({
+      where: { session_id: sessionId }
+    });
+    const totalWithdrawals = withdrawals.reduce((sum, w) => sum + parseFloat(w.amount), 0);
+
+    // Calculate expected amounts
+    let expected_cash = parseFloat(session.opening_cash);
+    let expected_card = 0;
+    let expected_qr = 0;
+    let expected_transfer = 0;
+
+    for (const sale of sales) {
+      for (const payment of sale.payments) {
+        const code = payment.payment_method.code;
+        const amount = parseFloat(payment.amount);
+
+        switch (code) {
+          case 'CASH':
+            expected_cash += amount;
+            break;
+          case 'DEBIT':
+          case 'CREDIT':
+            expected_card += amount;
+            break;
+          case 'QR':
+            expected_qr += amount;
+            break;
+          case 'TRANSFER':
+            expected_transfer += amount;
+            break;
+        }
+      }
+    }
+
+    expected_cash -= totalWithdrawals;
+
+    // Calculate discrepancies (all negative since declared is 0)
+    const discrepancy_cash = declared_cash - expected_cash;
+    const discrepancy_card = declared_card - expected_card;
+    const discrepancy_qr = declared_qr - expected_qr;
+    const discrepancy_transfer = declared_transfer - expected_transfer;
+    const total_discrepancy = discrepancy_cash + discrepancy_card + discrepancy_qr + discrepancy_transfer;
+
+    // Update session
+    await session.update({
+      closed_by: req.authorized_by?.id || req.user.id,
+      closed_at: new Date(),
+      declared_cash,
+      declared_card,
+      declared_qr,
+      declared_transfer,
+      expected_cash,
+      expected_card,
+      expected_qr,
+      expected_transfer,
+      discrepancy_cash,
+      discrepancy_card,
+      discrepancy_qr,
+      discrepancy_transfer,
+      total_discrepancy,
+      status: 'CLOSED',
+      closing_notes: `FORZADO POR GERENTE: ${reason}`
+    }, { transaction: t });
+
+    // Update daily report
+    const [dailyReport] = await DailyReport.findOrCreate({
+      where: {
+        branch_id: session.branch_id,
+        business_date: session.business_date
+      },
+      defaults: {
+        id: uuidv4(),
+        branch_id: session.branch_id,
+        business_date: session.business_date
+      },
+      transaction: t
+    });
+
+    await dailyReport.increment({
+      total_cash: expected_cash - parseFloat(session.opening_cash),
+      total_card: expected_card,
+      total_qr: expected_qr,
+      total_transfer: expected_transfer,
+      total_discrepancy: total_discrepancy,
+      transaction_count: sales.length
+    }, { transaction: t });
+
+    await t.commit();
+
+    // Create alert for force close
+    await Alert.create({
+      id: uuidv4(),
+      alert_type: 'REOPEN_REGISTER',
+      severity: 'CRITICAL',
+      branch_id: session.branch_id,
+      user_id: req.user.id,
+      title: `Cierre forzado de caja en ${session.branch.name}`,
+      message: `Sesión ${session.session_number} fue cerrada forzosamente por gerente. Motivo: ${reason}. Diferencia total: $${formatDecimal(total_discrepancy)}`,
+      reference_type: 'SESSION',
+      reference_id: session.id
+    });
+
+    // Emit event
+    const io = req.app.get('io');
+    if (io) {
+      io.emitToOwners(EVENTS.ALERT_CREATED, {
+        type: 'FORCE_CLOSE',
+        severity: 'CRITICAL',
+        branch_name: session.branch.name,
+        session_number: session.session_number,
+        reason
+      }, session.branch_id);
+    }
+
+    return success(res, {
+      ...session.toJSON(),
+      sales_count: sales.length,
+      force_closed: true
+    });
+  } catch (error) {
+    await t.rollback();
     next(error);
   }
 };

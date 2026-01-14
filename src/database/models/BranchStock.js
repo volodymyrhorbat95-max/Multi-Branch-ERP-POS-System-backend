@@ -48,6 +48,17 @@ module.exports = (sequelize) => {
     last_counted_quantity: {
       type: DataTypes.DECIMAL(12, 3),
       allowNull: true
+    },
+    // Min/Max stock thresholds per branch
+    min_stock: {
+      type: DataTypes.DECIMAL(12, 3),
+      allowNull: true,
+      comment: 'Minimum stock threshold for low stock alerts'
+    },
+    max_stock: {
+      type: DataTypes.DECIMAL(12, 3),
+      allowNull: true,
+      comment: 'Maximum stock threshold for reorder optimization'
     }
   }, {
     tableName: 'branch_stock',

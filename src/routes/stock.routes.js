@@ -102,7 +102,7 @@ router.post(
     stringField('notes', { required: false }),
     validate
   ],
-  async (req, res) => res.status(501).json({ message: 'Not implemented' })
+  stockController.submitInventoryCount
 );
 
 /**
@@ -140,7 +140,7 @@ router.get(
     ...paginationQuery,
     query('from_branch_id').optional().isUUID(4),
     query('to_branch_id').optional().isUUID(4),
-    query('status').optional().isIn(['PENDING', 'IN_TRANSIT', 'COMPLETED', 'CANCELLED']),
+    query('status').optional().isIn(['PENDING', 'APPROVED', 'IN_TRANSIT', 'RECEIVED', 'CANCELLED']),
     validate
   ],
   stockController.getTransfers
@@ -185,17 +185,24 @@ router.post(
 router.post(
   '/transfers/:id/approve',
   requirePermission('canAdjustStock'),
-  [uuidParam('id'), validate],
+  [
+    uuidParam('id'),
+    arrayField('items', { minLength: 1 }),
+    body('items.*.id').isUUID(4).withMessage('item id must be a valid UUID'),
+    body('items.*.shipped_quantity').isFloat({ min: 0.001 }).withMessage('shipped_quantity must be > 0'),
+    validate
+  ],
   stockController.approveTransfer
 );
 
 /**
  * @route   POST /api/v1/stock/transfers/:id/receive
  * @desc    Receive transfer at destination
- * @access  Private
+ * @access  Private (can_adjust_stock)
  */
 router.post(
   '/transfers/:id/receive',
+  requirePermission('canAdjustStock'),
   [
     uuidParam('id'),
     arrayField('items', { minLength: 1 }),
@@ -254,6 +261,40 @@ router.post(
     validate
   ],
   stockController.recordShrinkage
+);
+
+/**
+ * @route   GET /api/v1/stock/reports/shrinkage
+ * @desc    Get shrinkage report with analytics
+ * @access  Private
+ */
+router.get(
+  '/reports/shrinkage',
+  [
+    query('branch_id').optional().isUUID(4),
+    query('from_date').optional().isISO8601(),
+    query('to_date').optional().isISO8601(),
+    validate
+  ],
+  stockController.getShrinkageReport
+);
+
+/**
+ * @route   PUT /api/v1/stock/min-max
+ * @desc    Update min/max stock thresholds
+ * @access  Private (can_adjust_stock)
+ */
+router.put(
+  '/min-max',
+  requirePermission('canAdjustStock'),
+  [
+    uuidField('branch_id'),
+    uuidField('product_id'),
+    decimalField('min_stock', { min: 0, required: false }),
+    decimalField('max_stock', { min: 0, required: false }),
+    validate
+  ],
+  stockController.updateMinMax
 );
 
 module.exports = router;

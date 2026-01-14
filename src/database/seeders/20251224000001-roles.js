@@ -21,6 +21,8 @@ module.exports = {
         can_manage_suppliers: true,
         can_manage_products: true,
         can_issue_invoice_a: true,
+        can_manage_expenses: true,
+        can_approve_expenses: true,
         max_discount_percent: 100,
         created_at: new Date(),
         updated_at: new Date()
@@ -42,6 +44,8 @@ module.exports = {
         can_manage_suppliers: false,
         can_manage_products: true,
         can_issue_invoice_a: true,
+        can_manage_expenses: true,
+        can_approve_expenses: true,
         max_discount_percent: 20,
         created_at: new Date(),
         updated_at: new Date()
@@ -63,6 +67,8 @@ module.exports = {
         can_manage_suppliers: false,
         can_manage_products: false,
         can_issue_invoice_a: false,
+        can_manage_expenses: true,
+        can_approve_expenses: false,
         max_discount_percent: 5,
         created_at: new Date(),
         updated_at: new Date()

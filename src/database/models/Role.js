@@ -69,6 +69,14 @@ module.exports = (sequelize) => {
       type: DataTypes.BOOLEAN,
       defaultValue: false
     },
+    can_manage_expenses: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false
+    },
+    can_approve_expenses: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false
+    },
     max_discount_percent: {
       type: DataTypes.DECIMAL(5, 2),
       defaultValue: 0

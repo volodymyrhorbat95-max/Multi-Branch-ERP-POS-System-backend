@@ -7,7 +7,8 @@ const morgan = require('morgan');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
 
-const { sequelize } = require('./database/models');
+const models = require('./database/models');
+const { sequelize } = models;
 const routes = require('./routes');
 const errorHandler = require('./middleware/errorHandler');
 const { setupSocketIO } = require('./socket');
@@ -26,8 +27,9 @@ const io = new Server(httpServer, {
   }
 });
 
-// Make io accessible in routes
+// Make io and models accessible in routes
 app.set('io', io);
+app.set('models', models);
 
 // Middleware
 app.use(helmet());

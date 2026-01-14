@@ -76,6 +76,35 @@ module.exports = (sequelize) => {
     issued_at: {
       type: DataTypes.DATE,
       allowNull: true
+    },
+    branch_id: {
+      type: DataTypes.UUID,
+      allowNull: false,
+      references: {
+        model: 'branches',
+        key: 'id'
+      }
+    },
+    created_by: {
+      type: DataTypes.UUID,
+      allowNull: false,
+      references: {
+        model: 'users',
+        key: 'id'
+      }
+    },
+    error_message: {
+      type: DataTypes.TEXT,
+      allowNull: true
+    },
+    retry_count: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+      allowNull: false
+    },
+    last_retry_at: {
+      type: DataTypes.DATE,
+      allowNull: true
     }
   }, {
     tableName: 'credit_notes',
@@ -86,6 +115,8 @@ module.exports = (sequelize) => {
 
   CreditNote.associate = (models) => {
     CreditNote.belongsTo(models.Invoice, { foreignKey: 'original_invoice_id', as: 'original_invoice' });
+    CreditNote.belongsTo(models.Branch, { foreignKey: 'branch_id', as: 'branch' });
+    CreditNote.belongsTo(models.User, { foreignKey: 'created_by', as: 'creator' });
   };
 
   return CreditNote;

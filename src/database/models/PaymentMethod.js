@@ -16,6 +16,14 @@ module.exports = (sequelize) => {
       type: DataTypes.STRING(50),
       allowNull: false
     },
+    type: {
+      type: DataTypes.STRING(20),
+      allowNull: false,
+      defaultValue: 'CASH',
+      validate: {
+        isIn: [['CASH', 'CARD', 'QR', 'TRANSFER', 'CREDIT', 'OTHER']]
+      }
+    },
     requires_reference: {
       type: DataTypes.BOOLEAN,
       defaultValue: false

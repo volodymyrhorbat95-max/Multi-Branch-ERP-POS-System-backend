@@ -17,12 +17,16 @@ module.exports = {
     );
 
     const cashMethod = paymentMethods.find(pm => pm.code === 'CASH');
-    const cardMethod = paymentMethods.find(pm => pm.code === 'CARD');
+    const debitMethod = paymentMethods.find(pm => pm.code === 'DEBIT');
+    const creditMethod = paymentMethods.find(pm => pm.code === 'CREDIT');
     const qrMethod = paymentMethods.find(pm => pm.code === 'QR');
     const transferMethod = paymentMethods.find(pm => pm.code === 'TRANSFER');
 
-    if (!cashMethod) {
-      console.log('No payment methods found, skipping sale payments seeder');
+    // Use either DEBIT or CREDIT for card payments (randomly)
+    const cardMethods = [debitMethod, creditMethod].filter(Boolean);
+
+    if (!cashMethod || cardMethods.length === 0) {
+      console.log('Required payment methods not found, skipping sale payments seeder');
       return;
     }
 
@@ -56,12 +60,13 @@ module.exports = {
           created_at: saleDate
         });
       } else if (paymentType < 0.70) {
-        // Card only
+        // Card only (randomly DEBIT or CREDIT)
+        const selectedCardMethod = cardMethods[Math.floor(Math.random() * cardMethods.length)];
         const cardBrand = cardBrands[Math.floor(Math.random() * cardBrands.length)];
         salePayments.push({
           id: uuidv4(),
           sale_id: sale.id,
-          payment_method_id: cardMethod.id,
+          payment_method_id: selectedCardMethod.id,
           amount: totalToPay,
           reference_number: null,
           card_last_four: String(1000 + Math.floor(Math.random() * 9000)),
@@ -124,11 +129,12 @@ module.exports = {
 
         // Remaining as card or QR
         if (Math.random() > 0.5) {
+          const selectedCardMethod = cardMethods[Math.floor(Math.random() * cardMethods.length)];
           const cardBrand = cardBrands[Math.floor(Math.random() * cardBrands.length)];
           salePayments.push({
             id: uuidv4(),
             sale_id: sale.id,
-            payment_method_id: cardMethod.id,
+            payment_method_id: selectedCardMethod.id,
             amount: remainingAmount,
             reference_number: null,
             card_last_four: String(1000 + Math.floor(Math.random() * 9000)),

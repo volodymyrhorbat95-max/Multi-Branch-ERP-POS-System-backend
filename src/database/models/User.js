@@ -59,8 +59,9 @@ module.exports = (sequelize) => {
       defaultValue: true
     },
     pin_code: {
-      type: DataTypes.STRING(6),
-      allowNull: true
+      type: DataTypes.STRING(255),
+      allowNull: true,
+      comment: 'Hashed PIN code for quick login (bcrypt)'
     },
     last_login_at: {
       type: DataTypes.DATE,
@@ -88,10 +89,16 @@ module.exports = (sequelize) => {
         if (user.password_hash) {
           user.password_hash = await bcrypt.hash(user.password_hash, 12);
         }
+        if (user.pin_code) {
+          user.pin_code = await bcrypt.hash(user.pin_code, 12);
+        }
       },
       beforeUpdate: async (user) => {
         if (user.changed('password_hash')) {
           user.password_hash = await bcrypt.hash(user.password_hash, 12);
+        }
+        if (user.changed('pin_code')) {
+          user.pin_code = await bcrypt.hash(user.pin_code, 12);
         }
       }
     }
@@ -100,6 +107,13 @@ module.exports = (sequelize) => {
   // Instance methods
   User.prototype.validatePassword = async function(password) {
     return bcrypt.compare(password, this.password_hash);
+  };
+
+  User.prototype.validatePin = async function(pin) {
+    if (!this.pin_code) {
+      return false;
+    }
+    return bcrypt.compare(pin, this.pin_code);
   };
 
   User.prototype.toJSON = function() {

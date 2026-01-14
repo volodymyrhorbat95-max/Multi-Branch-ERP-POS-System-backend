@@ -4,6 +4,7 @@ const { User, Role, Branch, UserSession } = require('../database/models');
 const { success, created, unauthorized, notFound } = require('../utils/apiResponse');
 const { UnauthorizedError, NotFoundError, BusinessError } = require('../middleware/errorHandler');
 const logger = require('../utils/logger');
+const { logUserLogin, logUserLogout } = require('../utils/auditLogger');
 
 // Max failed login attempts before lockout
 const MAX_LOGIN_ATTEMPTS = 5;
@@ -149,6 +150,9 @@ exports.login = async (req, res, next) => {
       include: [{ model: Branch, as: 'branches' }]
     });
 
+    // Create audit log entry for login
+    await logUserLogin(req, user);
+
     return success(res, {
       user: {
         id: user.id,
@@ -194,7 +198,9 @@ exports.pinLogin = async (req, res, next) => {
       throw new UnauthorizedError('PIN not set for this user', 'E106');
     }
 
-    if (user.pin_code !== pin_code) {
+    // Validate PIN using bcrypt
+    const isPinValid = await user.validatePin(pin_code);
+    if (!isPinValid) {
       throw new UnauthorizedError('Invalid PIN', 'E107');
     }
 
@@ -250,6 +256,9 @@ exports.logout = async (req, res, next) => {
       { revoked_at: new Date() },
       { where: { id: req.session_id } }
     );
+
+    // Create audit log entry for logout
+    await logUserLogout(req, req.user);
 
     return success(res, null, 'Logged out successfully');
   } catch (error) {

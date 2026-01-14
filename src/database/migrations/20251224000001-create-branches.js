@@ -79,6 +79,43 @@ module.exports = {
         defaultValue: 100000.00,
         comment: 'Minimum petty cash fund that must remain at branch (change fund)'
       },
+      // POS Configuration
+      receipt_footer: {
+        type: Sequelize.TEXT,
+        allowNull: true,
+        comment: 'Custom text that appears at the bottom of receipts'
+      },
+      auto_print_receipt: {
+        type: Sequelize.BOOLEAN,
+        defaultValue: true,
+        comment: 'Automatically print receipt after sale completion'
+      },
+      require_customer: {
+        type: Sequelize.BOOLEAN,
+        defaultValue: false,
+        comment: 'Require customer selection before completing sale'
+      },
+      enable_discounts: {
+        type: Sequelize.BOOLEAN,
+        defaultValue: true,
+        comment: 'Allow discounts at this branch'
+      },
+      max_discount_percent: {
+        type: Sequelize.DECIMAL(5, 2),
+        defaultValue: 10.00,
+        comment: 'Maximum discount percentage allowed at POS'
+      },
+      // Tax Information
+      tax_id: {
+        type: Sequelize.STRING(20),
+        allowNull: true,
+        comment: 'CUIT/CUIL for this branch'
+      },
+      tax_condition: {
+        type: Sequelize.STRING(50),
+        allowNull: true,
+        comment: 'IVA condition: Responsable Inscripto, Monotributista, Exento, Consumidor Final'
+      },
       is_active: {
         type: Sequelize.BOOLEAN,
         defaultValue: true

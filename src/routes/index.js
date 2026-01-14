@@ -20,6 +20,12 @@ const reportRoutes = require('./report.routes');
 const syncRoutes = require('./sync.routes');
 const priceImportRoutes = require('./priceImport.routes');
 const loyaltyRoutes = require('./loyalty.routes');
+const printerRoutes = require('./printer.routes');
+const auditRoutes = require('./audit.routes');
+const chatRoutes = require('./chat.routes');
+const scaleRoutes = require('./scale.routes');
+const shippingRoutes = require('./shipping.routes');
+const expenseRoutes = require('./expense.routes');
 
 // API Version prefix
 const API_VERSION = '/v1';
@@ -43,5 +49,11 @@ router.use(`${API_VERSION}/reports`, reportRoutes);
 router.use(`${API_VERSION}/sync`, syncRoutes);
 router.use(`${API_VERSION}/prices`, priceImportRoutes);
 router.use(`${API_VERSION}/loyalty`, loyaltyRoutes);
+router.use(`${API_VERSION}/printer`, printerRoutes);
+router.use(`${API_VERSION}/audit`, auditRoutes);
+router.use(`${API_VERSION}/chat`, chatRoutes);
+router.use(`${API_VERSION}/scales`, scaleRoutes);
+router.use(`${API_VERSION}/shipping`, shippingRoutes);
+router.use(`${API_VERSION}/expenses`, expenseRoutes);
 
 module.exports = router;

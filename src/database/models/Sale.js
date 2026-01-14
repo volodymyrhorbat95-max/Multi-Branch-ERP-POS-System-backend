@@ -73,6 +73,33 @@ module.exports = (sequelize) => {
       type: DataTypes.DECIMAL(5, 2),
       defaultValue: 0
     },
+    discount_type: {
+      type: DataTypes.STRING(20),
+      allowNull: true,
+      validate: {
+        isIn: [['PERCENT', 'FIXED', 'WHOLESALE', null]]
+      }
+    },
+    discount_reason: {
+      type: DataTypes.STRING(255),
+      allowNull: true
+    },
+    discount_applied_by: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      references: {
+        model: 'users',
+        key: 'id'
+      }
+    },
+    discount_approved_by: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      references: {
+        model: 'users',
+        key: 'id'
+      }
+    },
     tax_amount: {
       type: DataTypes.DECIMAL(12, 2),
       defaultValue: 0
@@ -164,6 +191,11 @@ module.exports = (sequelize) => {
       validate: {
         isIn: [['PENDING', 'SYNCED', 'CONFLICT']]
       }
+    },
+    // Invoice override data (for offline sales with Type A invoices)
+    invoice_override: {
+      type: DataTypes.JSONB,
+      allowNull: true
     }
   }, {
     tableName: 'sales',
@@ -175,7 +207,8 @@ module.exports = (sequelize) => {
       { fields: ['customer_id'] },
       { fields: ['created_at'] },
       { fields: ['status'] },
-      { fields: ['local_id'] }
+      { fields: ['local_id'] },
+      { fields: ['discount_applied_by'] }
     ]
   });
 
@@ -188,11 +221,14 @@ module.exports = (sequelize) => {
     Sale.belongsTo(models.User, { foreignKey: 'created_by', as: 'creator' });
     Sale.belongsTo(models.User, { foreignKey: 'voided_by', as: 'voider' });
     Sale.belongsTo(models.User, { foreignKey: 'void_approved_by', as: 'void_approver' });
+    Sale.belongsTo(models.User, { foreignKey: 'discount_applied_by', as: 'discount_applier' });
+    Sale.belongsTo(models.User, { foreignKey: 'discount_approved_by', as: 'discount_approver' });
     Sale.hasMany(models.SaleItem, { foreignKey: 'sale_id', as: 'items' });
     Sale.hasMany(models.SalePayment, { foreignKey: 'sale_id', as: 'payments' });
     Sale.hasOne(models.Invoice, { foreignKey: 'sale_id', as: 'invoice' });
     Sale.hasMany(models.LoyaltyTransaction, { foreignKey: 'sale_id', as: 'loyalty_transactions' });
     Sale.hasMany(models.CreditTransaction, { foreignKey: 'sale_id', as: 'credit_transactions' });
+    Sale.hasOne(models.SaleShipping, { foreignKey: 'sale_id', as: 'shipping' });
   };
 
   return Sale;

@@ -26,6 +26,18 @@ exports.getAllMethods = async (req, res, next) => {
   }
 };
 
+exports.getActiveMethods = async (req, res, next) => {
+  try {
+    const methods = await PaymentMethod.findAll({
+      where: { is_active: true },
+      order: [['sort_order', 'ASC'], ['name', 'ASC']]
+    });
+    return success(res, methods);
+  } catch (error) {
+    next(error);
+  }
+};
+
 exports.getMethodById = async (req, res, next) => {
   try {
     const method = await PaymentMethod.findByPk(req.params.id);

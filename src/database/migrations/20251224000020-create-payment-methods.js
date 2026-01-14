@@ -17,6 +17,12 @@ module.exports = {
         type: Sequelize.STRING(50),
         allowNull: false
       },
+      type: {
+        type: Sequelize.STRING(20),
+        allowNull: false,
+        defaultValue: 'CASH',
+        comment: 'Payment type: CASH, CARD, QR, TRANSFER, CREDIT, OTHER'
+      },
       requires_reference: {
         type: Sequelize.BOOLEAN,
         defaultValue: false

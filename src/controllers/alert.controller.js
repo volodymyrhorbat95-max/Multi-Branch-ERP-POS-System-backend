@@ -4,9 +4,9 @@ const {
   Alert, AlertConfig, User, Branch, sequelize
 } = require('../database/models');
 const { success, created, paginated } = require('../utils/apiResponse');
-const { NotFoundError } = require('../middleware/errorHandler');
+const { NotFoundError, BusinessError } = require('../middleware/errorHandler');
 const { parsePagination } = require('../utils/helpers');
-const { getIO } = require('../socket');
+const { getIO, EVENTS } = require('../socket');
 const logger = require('../utils/logger');
 
 // Alert Configurations
@@ -122,18 +122,86 @@ exports.getById = async (req, res, next) => {
   }
 };
 
-exports.markAsRead = async (req, res, next) => {
+exports.getCounts = async (req, res, next) => {
   try {
-    const alert = await Alert.findByPk(req.params.id);
-    if (!alert) throw new NotFoundError('Alert not found');
+    const { branch_id, is_read, is_resolved } = req.query;
 
-    await alert.update({
-      is_read: true,
-      read_by: req.user.id,
-      read_at: new Date()
+    const where = {};
+    if (branch_id) where.branch_id = branch_id;
+    if (is_read !== undefined) where.is_read = is_read === 'true';
+    if (is_resolved !== undefined) where.is_resolved = is_resolved === 'true';
+
+    // Count by severity
+    const bySeverity = await Alert.findAll({
+      where,
+      attributes: [
+        'severity',
+        [sequelize.fn('COUNT', sequelize.col('id')), 'count']
+      ],
+      group: ['severity']
     });
 
-    return success(res, alert);
+    // Count by type
+    const byType = await Alert.findAll({
+      where,
+      attributes: [
+        'alert_type',
+        [sequelize.fn('COUNT', sequelize.col('id')), 'count']
+      ],
+      group: ['alert_type']
+    });
+
+    // Total count
+    const total = await Alert.count({ where });
+
+    return success(res, {
+      total,
+      by_severity: bySeverity.map(item => ({
+        severity: item.severity,
+        count: parseInt(item.get('count'))
+      })),
+      by_type: byType.map(item => ({
+        alert_type: item.alert_type,
+        count: parseInt(item.get('count'))
+      }))
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.markAsRead = async (req, res, next) => {
+  try {
+    const { alert_ids } = req.body;
+
+    if (!alert_ids || !Array.isArray(alert_ids) || alert_ids.length === 0) {
+      throw new BusinessError('alert_ids array is required and must not be empty', 'E400');
+    }
+
+    // Update all alerts in the array
+    const [updatedCount] = await Alert.update(
+      {
+        is_read: true,
+        read_by: req.user.id,
+        read_at: new Date()
+      },
+      {
+        where: {
+          id: { [Op.in]: alert_ids }
+        }
+      }
+    );
+
+    // Fetch updated alerts to return
+    const updatedAlerts = await Alert.findAll({
+      where: { id: { [Op.in]: alert_ids } },
+      include: [
+        { model: Branch, as: 'branch', attributes: ['id', 'name'] },
+        { model: User, as: 'reader', attributes: ['id', 'first_name', 'last_name'] }
+      ]
+    });
+
+    return success(res, updatedAlerts, `${updatedCount} alert(s) marked as read`);
   } catch (error) {
     next(error);
   }
@@ -157,6 +225,44 @@ exports.markAllAsRead = async (req, res, next) => {
     );
 
     return success(res, null, 'All alerts marked as read');
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.resolveAlert = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { resolution_notes } = req.body;
+
+    const alert = await Alert.findByPk(id);
+    if (!alert) {
+      throw new NotFoundError('Alert not found');
+    }
+
+    if (alert.is_resolved) {
+      throw new BusinessError('Alert is already resolved', 'E409');
+    }
+
+    await alert.update({
+      is_resolved: true,
+      resolved_by: req.user.id,
+      resolved_at: new Date(),
+      resolution_notes: resolution_notes || null
+    });
+
+    // Emit resolution event via WebSocket
+    const io = req.app.get('io');
+    if (io) {
+      io.emitToBranch(alert.branch_id, EVENTS.ALERT_RESOLVED, {
+        alert_id: alert.id,
+        alert_type: alert.alert_type,
+        resolved_by: `${req.user.first_name} ${req.user.last_name}`,
+        resolved_at: alert.resolved_at
+      });
+    }
+
+    return success(res, alert, 'Alert resolved successfully');
   } catch (error) {
     next(error);
   }

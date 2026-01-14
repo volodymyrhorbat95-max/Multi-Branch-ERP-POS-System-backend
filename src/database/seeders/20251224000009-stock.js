@@ -20,10 +20,26 @@ module.exports = {
       branches.forEach((branch, branchIndex) => {
         // Vary stock levels per branch
         let quantity = 0;
-        if (branchIndex === 0) quantity = 500; // Branch 1 has most stock
-        else if (branchIndex === 1) quantity = 400;
-        else if (branchIndex === 2) quantity = 350;
-        else quantity = 300; // Branch 4 has least stock
+        let minStock = 0;
+        let maxStock = 0;
+
+        if (branchIndex === 0) {
+          quantity = 500; // Branch 1 has most stock
+          minStock = 50;
+          maxStock = 1000;
+        } else if (branchIndex === 1) {
+          quantity = 400;
+          minStock = 40;
+          maxStock = 800;
+        } else if (branchIndex === 2) {
+          quantity = 350;
+          minStock = 35;
+          maxStock = 700;
+        } else {
+          quantity = 300; // Branch 4 has least stock
+          minStock = 30;
+          maxStock = 600;
+        }
 
         stockRecords.push({
           id: uuidv4(),
@@ -31,6 +47,8 @@ module.exports = {
           branch_id: branch.id,
           quantity: quantity,
           reserved_quantity: 0,
+          min_stock: minStock,
+          max_stock: maxStock,
           updated_at: new Date()
         });
       });

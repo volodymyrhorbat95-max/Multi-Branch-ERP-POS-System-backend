@@ -23,6 +23,19 @@ const EVENTS = {
   STOCK_LOW: 'STOCK_LOW',
   STOCK_UPDATED: 'STOCK_UPDATED',
 
+  // Transfer events
+  TRANSFER_CREATED: 'TRANSFER_CREATED',
+  TRANSFER_APPROVED: 'TRANSFER_APPROVED',
+  TRANSFER_IN_TRANSIT: 'TRANSFER_IN_TRANSIT',
+  TRANSFER_RECEIVED: 'TRANSFER_RECEIVED',
+  TRANSFER_CANCELLED: 'TRANSFER_CANCELLED',
+
+  // Chat events
+  CHAT_MESSAGE: 'chat:message',
+  CHAT_NEW_MESSAGE: 'chat:new_message',
+  CHAT_MESSAGE_DELETED: 'chat:message_deleted',
+  CHAT_TYPING: 'chat:typing',
+
   // Sync events
   SYNC_COMPLETED: 'SYNC_COMPLETED',
   SYNC_CONFLICT: 'SYNC_CONFLICT',
@@ -45,10 +58,18 @@ const connectedUsers = new Map();
 const branchRooms = new Map();
 
 /**
+ * Store io instance for use in other modules
+ */
+let ioInstance = null;
+
+/**
  * Setup Socket.IO with authentication and event handling
  * @param {Server} io - Socket.IO server instance
  */
 const setupSocketIO = (io) => {
+  // Store io instance
+  ioInstance = io;
+
   // Authentication middleware
   io.use(async (socket, next) => {
     try {
@@ -111,6 +132,30 @@ const setupSocketIO = (io) => {
     if (socket.user.permissions.canViewAllBranches) {
       socket.join('owners');
     }
+
+    // Join user's personal room for direct messages
+    socket.join(`user:${userId}`);
+
+    // Handle conversation room join
+    socket.on('join:conversation', (conversationId) => {
+      socket.join(`conversation:${conversationId}`);
+      logger.info(`User ${userId} joined conversation ${conversationId}`);
+    });
+
+    // Handle conversation room leave
+    socket.on('leave:conversation', (conversationId) => {
+      socket.leave(`conversation:${conversationId}`);
+      logger.info(`User ${userId} left conversation ${conversationId}`);
+    });
+
+    // Handle typing indicator
+    socket.on('chat:typing', (data) => {
+      socket.to(`conversation:${data.conversationId}`).emit('chat:typing', {
+        user_id: userId,
+        conversation_id: data.conversationId,
+        typing: data.typing
+      });
+    });
 
     // Handle room subscription (for switching branches)
     socket.on('subscribe:branch', (newBranchId) => {
@@ -222,8 +267,20 @@ const getBranchConnections = (branchId) => {
   return room ? Array.from(room) : [];
 };
 
+/**
+ * Get Socket.IO instance for use in other modules
+ * @returns {Server} Socket.IO server instance
+ */
+const getIO = () => {
+  if (!ioInstance) {
+    throw new Error('Socket.IO not initialized. Call setupSocketIO first.');
+  }
+  return ioInstance;
+};
+
 module.exports = {
   setupSocketIO,
+  getIO,
   EVENTS,
   getConnectedUsers,
   isUserConnected,

@@ -54,8 +54,15 @@ const InvoiceType = require('./InvoiceType')(sequelize);
 const Invoice = require('./Invoice')(sequelize);
 const CreditNote = require('./CreditNote')(sequelize);
 const Alert = require('./Alert')(sequelize);
+const AlertConfig = require('./AlertConfig')(sequelize);
 const SyncQueue = require('./SyncQueue')(sequelize);
+const SyncLog = require('./SyncLog')(sequelize);
 const AuditLog = require('./AuditLog')(sequelize);
+const ShippingZone = require('./ShippingZone')(sequelize);
+const NeighborhoodMapping = require('./NeighborhoodMapping')(sequelize);
+const SaleShipping = require('./SaleShipping')(sequelize);
+const ExpenseCategory = require('./ExpenseCategory')(sequelize);
+const Expense = require('./Expense')(sequelize);
 
 // Create models object
 const models = {
@@ -93,8 +100,15 @@ const models = {
   Invoice,
   CreditNote,
   Alert,
+  AlertConfig,
   SyncQueue,
-  AuditLog
+  SyncLog,
+  AuditLog,
+  ShippingZone,
+  NeighborhoodMapping,
+  SaleShipping,
+  ExpenseCategory,
+  Expense
 };
 
 // Set up associations

@@ -1,11 +1,12 @@
 const { Op } = require('sequelize');
 const { v4: uuidv4 } = require('uuid');
 const {
-  Sale, SaleItem, SalePayment, Customer, Product, BranchStock, SyncLog, sequelize
+  Sale, SaleItem, SalePayment, Customer, Product, BranchStock, SyncLog, SyncQueue, Alert, sequelize
 } = require('../database/models');
 const { success, created } = require('../utils/apiResponse');
 const { BusinessError } = require('../middleware/errorHandler');
 const logger = require('../utils/logger');
+const { EVENTS } = require('../socket');
 
 // Get pending sync items for a branch
 exports.getPendingSync = async (req, res, next) => {
@@ -157,6 +158,7 @@ exports.uploadOfflineSales = async (req, res, next) => {
             change_as_credit: saleData.change_as_credit || 0,
             status: saleData.status || 'COMPLETED',
             created_by: saleData.created_by,
+            invoice_override: saleData.invoice_override || null, // Store invoice override for retry
             synced_at: new Date(),
             created_at: saleData.local_created_at || new Date()
           }, { transaction: t });
@@ -358,6 +360,40 @@ exports.uploadOfflineSales = async (req, res, next) => {
 
     await t.commit();
 
+    // AFTER TRANSACTION COMMITS: Create alerts for sync errors
+    if (results.failed.length > 0 || results.conflicts.length > 0) {
+      const Branch = require('../database/models').Branch;
+      const branch = await Branch.findByPk(branch_id);
+      const errorCount = results.failed.length + results.conflicts.length;
+      const severity = errorCount > 10 ? 'HIGH' : (errorCount > 5 ? 'MEDIUM' : 'LOW');
+
+      const syncErrorAlert = await Alert.create({
+        id: uuidv4(),
+        alert_type: 'SYNC_ERROR',
+        severity: severity,
+        branch_id: branch_id,
+        user_id: req.user?.id,
+        title: `Errores de sincronización en ${branch?.name || 'sucursal'}`,
+        message: `${errorCount} elemento(s) fallaron al sincronizar. Fallos: ${results.failed.length}, Conflictos: ${results.conflicts.length}`,
+        reference_type: 'SYNC',
+        reference_id: null
+      });
+
+      // Emit alert via WebSocket
+      const io = req.app.get('io');
+      if (io) {
+        io.emitToOwners(EVENTS.ALERT_CREATED, {
+          alert_id: syncErrorAlert.id,
+          type: 'SYNC_ERROR',
+          severity: severity,
+          branch_name: branch?.name,
+          error_count: errorCount,
+          failed_count: results.failed.length,
+          conflict_count: results.conflicts.length
+        }, branch_id);
+      }
+    }
+
     // AFTER TRANSACTION COMMITS: Trigger async invoice generation for synced sales
     // This must happen AFTER commit to ensure sale data is persisted
     if (syncedSalesForInvoicing.length > 0) {
@@ -558,49 +594,145 @@ exports.forceSyncSale = async (req, res, next) => {
   }
 };
 
+// Get conflicts for a branch
+exports.getConflicts = async (req, res, next) => {
+  try {
+    const { branch_id } = req.query;
+
+    const where = {
+      status: 'CONFLICT'
+    };
+
+    if (branch_id) {
+      where.branch_id = branch_id;
+    }
+
+    // Get all conflict items from sync queue
+    const conflicts = await SyncQueue.findAll({
+      where,
+      include: [
+        {
+          model: require('../database/models').Branch,
+          as: 'branch',
+          attributes: ['id', 'name', 'code']
+        }
+      ],
+      order: [['created_at', 'DESC']]
+    });
+
+    // Transform to conflict response format
+    const conflictData = conflicts.map(item => ({
+      id: item.id,
+      local_id: item.entity_local_id,
+      entity_type: item.entity_type,
+      conflict_type: item.conflict_type || 'UNKNOWN',
+      error_message: item.error_message,
+      local_created_at: item.local_created_at,
+      retry_count: item.retry_count,
+      branch: item.branch,
+      payload: item.payload
+    }));
+
+    return success(res, {
+      conflicts: conflictData,
+      count: conflictData.length
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // Resolve sync conflicts
 exports.resolveConflict = async (req, res, next) => {
   const t = await sequelize.transaction();
   try {
-    const { entity_type, local_id, server_id, resolution } = req.body;
+    const { id } = req.params; // SyncQueue item ID
+    const { resolution, merged_data } = req.body;
 
-    // resolution: 'USE_LOCAL', 'USE_SERVER', 'MERGE'
+    // Find the conflict in sync queue
+    const queueItem = await SyncQueue.findByPk(id, { transaction: t });
+    if (!queueItem) {
+      throw new BusinessError('Conflict not found', 404);
+    }
 
-    switch (entity_type) {
-      case 'SALE':
-        if (resolution === 'USE_SERVER') {
-          // Delete local duplicate
-          await Sale.destroy({
-            where: { local_id },
-            transaction: t
-          });
-        } else if (resolution === 'USE_LOCAL') {
-          // Update server record with local data
-          const localSale = await Sale.findOne({ where: { local_id } });
-          const serverSale = await Sale.findByPk(server_id);
+    if (queueItem.status !== 'CONFLICT') {
+      throw new BusinessError('Item is not in conflict state', 400);
+    }
 
-          if (localSale && serverSale) {
-            await serverSale.update({
-              total_amount: localSale.total_amount,
-              sync_status: 'SYNCED'
-            }, { transaction: t });
+    const conflictType = queueItem.conflict_type;
+    const entityType = queueItem.entity_type;
+    const localId = queueItem.entity_local_id;
 
-            await localSale.destroy({ transaction: t });
-          }
-        }
+    logger.info(`Resolving conflict ${id}: ${entityType} ${localId} with ${resolution}`);
+
+    // Handle different resolution strategies
+    switch (resolution) {
+      case 'LOCAL_WINS':
+        // Retry the sync operation (will attempt to force local data)
+        await queueItem.update({
+          status: 'PENDING',
+          retry_count: 0,
+          conflict_type: null,
+          conflict_resolution: 'LOCAL_WINS',
+          conflict_resolved_by: req.user.id,
+          error_message: null
+        }, { transaction: t });
+        logger.info(`Conflict ${id} marked for retry with LOCAL_WINS`);
         break;
 
-      case 'CUSTOMER':
-        // Handle customer conflicts
+      case 'SERVER_WINS':
+        // Discard the local change
+        await queueItem.update({
+          status: 'FAILED',
+          conflict_resolution: 'SERVER_WINS',
+          conflict_resolved_by: req.user.id,
+          error_message: 'Discarded in favor of server data'
+        }, { transaction: t });
+
+        // Also mark related local entity as discarded
+        if (entityType === 'SALE') {
+          await Sale.update({
+            sync_status: 'CONFLICT',
+            sync_error: 'Discarded in favor of server data'
+          }, {
+            where: { local_id: localId },
+            transaction: t
+          });
+        }
+        logger.info(`Conflict ${id} resolved with SERVER_WINS - local data discarded`);
+        break;
+
+      case 'MERGED':
+        // Use merged data provided by user
+        if (!merged_data) {
+          throw new BusinessError('merged_data required for MERGED resolution', 400);
+        }
+
+        await queueItem.update({
+          status: 'PENDING',
+          retry_count: 0,
+          payload: merged_data, // Update payload with merged data
+          conflict_type: null,
+          conflict_resolution: 'MERGED',
+          conflict_resolved_by: req.user.id,
+          error_message: null
+        }, { transaction: t });
+        logger.info(`Conflict ${id} marked for retry with MERGED data`);
         break;
 
       default:
-        throw new BusinessError(`Unknown entity type: ${entity_type}`);
+        throw new BusinessError(`Invalid resolution strategy: ${resolution}`, 400);
     }
 
     await t.commit();
 
-    return success(res, null, 'Conflict resolved');
+    return success(res, {
+      id: queueItem.id,
+      local_id: localId,
+      entity_type: entityType,
+      resolution,
+      message: 'Conflict resolved successfully'
+    });
   } catch (error) {
     await t.rollback();
     next(error);

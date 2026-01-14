@@ -69,6 +69,16 @@ module.exports = {
         type: Sequelize.BOOLEAN,
         defaultValue: false
       },
+      can_manage_expenses: {
+        type: Sequelize.BOOLEAN,
+        defaultValue: false,
+        comment: 'Can create, edit, delete, and mark expenses as paid'
+      },
+      can_approve_expenses: {
+        type: Sequelize.BOOLEAN,
+        defaultValue: false,
+        comment: 'Can approve or reject expense submissions'
+      },
       max_discount_percent: {
         type: Sequelize.DECIMAL(5, 2),
         defaultValue: 0

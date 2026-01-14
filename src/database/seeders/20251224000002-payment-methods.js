@@ -8,6 +8,7 @@ module.exports = {
         id: uuidv4(),
         code: 'CASH',
         name: 'Efectivo',
+        type: 'CASH',
         requires_reference: false,
         is_active: true,
         sort_order: 1,
@@ -15,8 +16,9 @@ module.exports = {
       },
       {
         id: uuidv4(),
-        code: 'CARD',
-        name: 'Tarjeta',
+        code: 'DEBIT',
+        name: 'Tarjeta Débito',
+        type: 'CARD',
         requires_reference: false,
         is_active: true,
         sort_order: 2,
@@ -24,8 +26,9 @@ module.exports = {
       },
       {
         id: uuidv4(),
-        code: 'QR',
-        name: 'QR / MercadoPago',
+        code: 'CREDIT',
+        name: 'Tarjeta Crédito',
+        type: 'CARD',
         requires_reference: false,
         is_active: true,
         sort_order: 3,
@@ -33,11 +36,22 @@ module.exports = {
       },
       {
         id: uuidv4(),
-        code: 'TRANSFER',
-        name: 'Transferencia',
-        requires_reference: true,
+        code: 'QR',
+        name: 'QR / MercadoPago',
+        type: 'QR',
+        requires_reference: false,
         is_active: true,
         sort_order: 4,
+        created_at: new Date()
+      },
+      {
+        id: uuidv4(),
+        code: 'TRANSFER',
+        name: 'Transferencia',
+        type: 'TRANSFER',
+        requires_reference: true,
+        is_active: true,
+        sort_order: 5,
         created_at: new Date()
       }
     ]);

@@ -25,7 +25,7 @@ router.get('/', paymentController.getAllMethods);
  * @desc    Get active payment methods only
  * @access  Private
  */
-router.get('/active', async (_req, res) => res.status(501).json({ message: 'Not implemented' }));
+router.get('/active', paymentController.getActiveMethods);
 
 /**
  * @route   GET /api/v1/payment-methods/:id

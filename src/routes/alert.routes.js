@@ -50,10 +50,10 @@ router.get('/unread', alertController.getUnreadCount);
 
 /**
  * @route   GET /api/v1/alerts/counts
- * @desc    Get alert counts by severity
+ * @desc    Get alert counts by severity and type
  * @access  Private
  */
-router.get('/counts', async (_req, res) => res.status(501).json({ message: 'Not implemented' }));
+router.get('/counts', alertController.getCounts);
 
 /**
  * @route   GET /api/v1/alerts/:id
@@ -92,7 +92,7 @@ router.post(
     stringField('resolution_notes', { required: false }),
     validate
   ],
-  async (_req, res) => res.status(501).json({ message: 'Not implemented' })
+  alertController.resolveAlert
 );
 
 /**

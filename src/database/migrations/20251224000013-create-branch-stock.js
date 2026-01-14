@@ -53,6 +53,16 @@ module.exports = {
         type: Sequelize.DECIMAL(12, 3),
         allowNull: true
       },
+      min_stock: {
+        type: Sequelize.DECIMAL(12, 3),
+        allowNull: true,
+        comment: 'Minimum stock threshold for low stock alerts'
+      },
+      max_stock: {
+        type: Sequelize.DECIMAL(12, 3),
+        allowNull: true,
+        comment: 'Maximum stock threshold for reorder optimization'
+      },
       updated_at: {
         type: Sequelize.DATE,
         allowNull: false,
@@ -61,6 +71,12 @@ module.exports = {
     });
 
     await queryInterface.addIndex('branch_stock', ['branch_id', 'product_id'], { unique: true });
+    await queryInterface.addIndex('branch_stock', ['min_stock'], {
+      name: 'branch_stock_min_stock_idx'
+    });
+    await queryInterface.addIndex('branch_stock', ['quantity'], {
+      name: 'branch_stock_quantity_idx'
+    });
   },
 
   async down(queryInterface) {

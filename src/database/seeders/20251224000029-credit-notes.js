@@ -3,12 +3,13 @@ const { v4: uuidv4 } = require('uuid');
 
 module.exports = {
   async up(queryInterface) {
-    // Get issued invoices
+    // Get issued invoices with branch and user info
     const [invoices] = await queryInterface.sequelize.query(
       `SELECT i.id, i.invoice_type_id, i.point_of_sale, i.net_amount, i.tax_amount, i.total_amount,
-              i.issued_at, it.code as invoice_type_code
+              i.issued_at, i.branch_id, s.created_by, it.code as invoice_type_code
        FROM invoices i
        JOIN invoice_types it ON i.invoice_type_id = it.id
+       JOIN sales s ON i.sale_id = s.id
        WHERE i.status = 'ISSUED'
        ORDER BY i.issued_at
        LIMIT 5;`
@@ -61,6 +62,11 @@ module.exports = {
         pdf_url: isIssued ? `https://factuhoy.com/credit-notes/${uuidv4()}.pdf` : null,
         status: isIssued ? 'ISSUED' : 'PENDING',
         issued_at: isIssued ? issuedDate : null,
+        branch_id: invoice.branch_id,
+        created_by: invoice.created_by,
+        error_message: idx === 2 ? 'Error de conexion con AFIP' : null,
+        retry_count: idx === 2 ? 2 : 0,
+        last_retry_at: idx === 2 ? new Date(issuedDate.getTime() + 3600000) : null,
         created_at: issuedDate
       });
     });

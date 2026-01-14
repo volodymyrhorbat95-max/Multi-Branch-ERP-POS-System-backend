@@ -28,6 +28,20 @@ router.get(
 );
 
 /**
+ * @route   GET /api/v1/reports/consolidated-daily
+ * @desc    Get consolidated daily report across all branches for a specific date
+ * @access  Private (can_view_reports)
+ */
+router.get(
+  '/consolidated-daily',
+  [
+    query('date').optional().isISO8601(),
+    validate
+  ],
+  reportController.getConsolidatedDailyReport
+);
+
+/**
  * @route   GET /api/v1/reports/live-branch-status
  * @desc    Get live shift status for all branches (today)
  * @access  Private (can_view_reports)
@@ -99,7 +113,7 @@ router.get(
     query('to_date').isISO8601().withMessage('to_date is required'),
     validate
   ],
-  async (_req, res) => res.status(501).json({ message: 'Not implemented' })
+  reportController.getCategoryReport
 );
 
 /**
@@ -131,7 +145,7 @@ router.get(
     query('to_date').isISO8601().withMessage('to_date is required'),
     validate
   ],
-  async (_req, res) => res.status(501).json({ message: 'Not implemented' })
+  reportController.getDiscrepancyReport
 );
 
 /**
@@ -147,7 +161,7 @@ router.get(
     query('to_date').isISO8601().withMessage('to_date is required'),
     validate
   ],
-  async (_req, res) => res.status(501).json({ message: 'Not implemented' })
+  reportController.getPaymentMethodReport
 );
 
 /**
@@ -177,7 +191,7 @@ router.get(
     query('to_date').isISO8601().withMessage('to_date is required'),
     validate
   ],
-  async (_req, res) => res.status(501).json({ message: 'Not implemented' })
+  reportController.getShrinkageReport
 );
 
 /**
@@ -193,7 +207,7 @@ router.get(
     query('to_date').isISO8601().withMessage('to_date is required'),
     validate
   ],
-  async (_req, res) => res.status(501).json({ message: 'Not implemented' })
+  reportController.getHourlyReport
 );
 
 /**
@@ -209,7 +223,7 @@ router.get(
     query('to_date').isISO8601().withMessage('to_date is required'),
     validate
   ],
-  async (_req, res) => res.status(501).json({ message: 'Not implemented' })
+  reportController.getBranchComparisonReport
 );
 
 module.exports = router;

@@ -7,6 +7,7 @@ const {
 const { success, created, paginated } = require('../utils/apiResponse');
 const { NotFoundError, BusinessError } = require('../middleware/errorHandler');
 const { parsePagination } = require('../utils/helpers');
+const logger = require('../utils/logger');
 
 exports.getBranchStock = async (req, res, next) => {
   try {
@@ -190,16 +191,16 @@ exports.getTransfers = async (req, res, next) => {
     const { from_branch_id, to_branch_id, status } = req.query;
 
     const where = {};
-    if (from_branch_id) where.from_branch_id = from_branch_id;
-    if (to_branch_id) where.to_branch_id = to_branch_id;
+    if (from_branch_id) where.source_branch_id = from_branch_id;
+    if (to_branch_id) where.destination_branch_id = to_branch_id;
     if (status) where.status = status;
 
     const { count, rows } = await StockTransfer.findAndCountAll({
       where,
       include: [
-        { model: Branch, as: 'from_branch', attributes: ['name', 'code'] },
-        { model: Branch, as: 'to_branch', attributes: ['name', 'code'] },
-        { model: User, as: 'requested_by_user', attributes: ['first_name', 'last_name'] }
+        { model: Branch, as: 'source_branch', attributes: ['name', 'code'] },
+        { model: Branch, as: 'destination_branch', attributes: ['name', 'code'] },
+        { model: User, as: 'requester', attributes: ['first_name', 'last_name'] }
       ],
       order: [['created_at', 'DESC']],
       limit,
@@ -216,11 +217,12 @@ exports.getTransferById = async (req, res, next) => {
   try {
     const transfer = await StockTransfer.findByPk(req.params.id, {
       include: [
-        { model: Branch, as: 'from_branch' },
-        { model: Branch, as: 'to_branch' },
-        { model: User, as: 'requested_by_user', attributes: ['first_name', 'last_name'] },
-        { model: User, as: 'approved_by_user', attributes: ['first_name', 'last_name'] },
-        { model: User, as: 'received_by_user', attributes: ['first_name', 'last_name'] },
+        { model: Branch, as: 'source_branch' },
+        { model: Branch, as: 'destination_branch' },
+        { model: User, as: 'requester', attributes: ['first_name', 'last_name'] },
+        { model: User, as: 'approver', attributes: ['first_name', 'last_name'] },
+        { model: User, as: 'shipper', attributes: ['first_name', 'last_name'] },
+        { model: User, as: 'receiver', attributes: ['first_name', 'last_name'] },
         {
           model: StockTransferItem,
           as: 'items',
@@ -244,8 +246,8 @@ exports.createTransfer = async (req, res, next) => {
     const transfer = await StockTransfer.create({
       id: uuidv4(),
       transfer_number: `TR-${Date.now()}`,
-      from_branch_id,
-      to_branch_id,
+      source_branch_id: from_branch_id,
+      destination_branch_id: to_branch_id,
       status: 'PENDING',
       notes,
       requested_by: req.user.id,
@@ -257,9 +259,9 @@ exports.createTransfer = async (req, res, next) => {
         id: uuidv4(),
         transfer_id: transfer.id,
         product_id: item.product_id,
-        quantity_requested: item.quantity,
-        quantity_sent: 0,
-        quantity_received: 0
+        requested_quantity: item.quantity,
+        shipped_quantity: 0,
+        received_quantity: 0
       }, { transaction: t });
     }
 
@@ -267,8 +269,8 @@ exports.createTransfer = async (req, res, next) => {
 
     const createdTransfer = await StockTransfer.findByPk(transfer.id, {
       include: [
-        { model: Branch, as: 'from_branch' },
-        { model: Branch, as: 'to_branch' },
+        { model: Branch, as: 'source_branch' },
+        { model: Branch, as: 'destination_branch' },
         { model: StockTransferItem, as: 'items', include: [{ model: Product, as: 'product' }] }
       ]
     });
@@ -297,27 +299,27 @@ exports.approveTransfer = async (req, res, next) => {
       const transferItem = transfer.items.find((i) => i.id === item.id);
       if (!transferItem) continue;
 
-      await transferItem.update({ quantity_sent: item.quantity_sent }, { transaction: t });
+      await transferItem.update({ shipped_quantity: item.shipped_quantity }, { transaction: t });
 
       // Deduct from source branch
       const sourceStock = await BranchStock.findOne({
-        where: { branch_id: transfer.from_branch_id, product_id: transferItem.product_id }
+        where: { branch_id: transfer.source_branch_id, product_id: transferItem.product_id }
       });
 
-      if (!sourceStock || sourceStock.quantity < item.quantity_sent) {
+      if (!sourceStock || sourceStock.quantity < item.shipped_quantity) {
         throw new BusinessError(`Insufficient stock for product ${transferItem.product_id}`);
       }
 
-      const newQuantity = parseFloat(sourceStock.quantity) - item.quantity_sent;
+      const newQuantity = parseFloat(sourceStock.quantity) - item.shipped_quantity;
       await sourceStock.update({ quantity: newQuantity }, { transaction: t });
 
       // Create movement record
       await StockMovement.create({
         id: uuidv4(),
-        branch_id: transfer.from_branch_id,
+        branch_id: transfer.source_branch_id,
         product_id: transferItem.product_id,
         movement_type: 'TRANSFER_OUT',
-        quantity: item.quantity_sent,
+        quantity: item.shipped_quantity,
         quantity_before: sourceStock.quantity,
         quantity_after: newQuantity,
         reference_type: 'TRANSFER',
@@ -329,7 +331,9 @@ exports.approveTransfer = async (req, res, next) => {
     await transfer.update({
       status: 'IN_TRANSIT',
       approved_by: req.user.id,
-      approved_at: new Date()
+      approved_at: new Date(),
+      shipped_by: req.user.id,
+      shipped_at: new Date()
     }, { transaction: t });
 
     await t.commit();
@@ -354,14 +358,14 @@ exports.receiveTransfer = async (req, res, next) => {
 
     // Update items with received quantities and add to destination branch
     for (const item of req.body.items) {
-      const transferItem = transfer.items.find((i) => i.id === item.id);
+      const transferItem = transfer.items.find((i) => i.id === item.item_id);
       if (!transferItem) continue;
 
-      await transferItem.update({ quantity_received: item.quantity_received }, { transaction: t });
+      await transferItem.update({ received_quantity: item.quantity_received }, { transaction: t });
 
       // Add to destination branch
       let destStock = await BranchStock.findOne({
-        where: { branch_id: transfer.to_branch_id, product_id: transferItem.product_id }
+        where: { branch_id: transfer.destination_branch_id, product_id: transferItem.product_id }
       });
 
       const previousQuantity = destStock ? parseFloat(destStock.quantity) : 0;
@@ -370,11 +374,12 @@ exports.receiveTransfer = async (req, res, next) => {
       if (!destStock) {
         destStock = await BranchStock.create({
           id: uuidv4(),
-          branch_id: transfer.to_branch_id,
+          branch_id: transfer.destination_branch_id,
           product_id: transferItem.product_id,
           quantity: newQuantity,
-          min_stock: 0,
-          max_stock: 0
+          reserved_quantity: 0,
+          expected_shrinkage: 0,
+          actual_shrinkage: 0
         }, { transaction: t });
       } else {
         await destStock.update({ quantity: newQuantity }, { transaction: t });
@@ -383,7 +388,7 @@ exports.receiveTransfer = async (req, res, next) => {
       // Create movement record
       await StockMovement.create({
         id: uuidv4(),
-        branch_id: transfer.to_branch_id,
+        branch_id: transfer.destination_branch_id,
         product_id: transferItem.product_id,
         movement_type: 'TRANSFER_IN',
         quantity: item.quantity_received,
@@ -396,7 +401,7 @@ exports.receiveTransfer = async (req, res, next) => {
     }
 
     await transfer.update({
-      status: 'COMPLETED',
+      status: 'RECEIVED',
       received_by: req.user.id,
       received_at: new Date()
     }, { transaction: t });
@@ -417,32 +422,33 @@ exports.cancelTransfer = async (req, res, next) => {
     });
 
     if (!transfer) throw new NotFoundError('Transfer not found');
-    if (transfer.status === 'COMPLETED') {
-      throw new BusinessError('Cannot cancel completed transfer');
+    if (transfer.status === 'RECEIVED') {
+      throw new BusinessError('Cannot cancel received transfer');
     }
 
     // If in transit, restore stock to source branch
     if (transfer.status === 'IN_TRANSIT') {
       for (const item of transfer.items) {
         const sourceStock = await BranchStock.findOne({
-          where: { branch_id: transfer.from_branch_id, product_id: item.product_id }
+          where: { branch_id: transfer.source_branch_id, product_id: item.product_id }
         });
 
         if (sourceStock) {
-          const newQuantity = parseFloat(sourceStock.quantity) + parseFloat(item.quantity_sent);
+          const newQuantity = parseFloat(sourceStock.quantity) + parseFloat(item.shipped_quantity);
           await sourceStock.update({ quantity: newQuantity }, { transaction: t });
 
           await StockMovement.create({
             id: uuidv4(),
-            branch_id: transfer.from_branch_id,
+            branch_id: transfer.source_branch_id,
             product_id: item.product_id,
-            movement_type: 'TRANSFER_OUT',
-            quantity: item.quantity_sent,
+            movement_type: 'ADJUSTMENT_PLUS',
+            quantity: item.shipped_quantity,
             quantity_before: sourceStock.quantity,
             quantity_after: newQuantity,
-            reference_type: 'TRANSFER',
+            reference_type: 'TRANSFER_CANCELLATION',
             reference_id: transfer.id,
-            notes: 'Transfer cancelled - stock restored',
+            adjustment_reason: 'TRANSFER_CANCELLED',
+            notes: `Transfer ${transfer.transfer_number} cancelled - stock restored`,
             performed_by: req.user.id
           }, { transaction: t });
         }
@@ -592,6 +598,149 @@ exports.getShrinkageReport = async (req, res, next) => {
       totals: totals?.toJSON() || { total_quantity: 0, total_records: 0 }
     });
   } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Submit physical inventory count
+ * Processes counted quantities and creates adjustment movements for variances
+ */
+exports.submitInventoryCount = async (req, res, next) => {
+  const t = await sequelize.transaction();
+  try {
+    const { branch_id, entries, notes } = req.body;
+
+    // Validate branch exists
+    const branch = await Branch.findByPk(branch_id);
+    if (!branch) {
+      throw new NotFoundError('Branch not found');
+    }
+
+    const results = {
+      processed: 0,
+      adjustments: 0,
+      no_change: 0,
+      details: []
+    };
+
+    // Process each inventory count entry
+    for (const entry of entries) {
+      const { product_id, counted_quantity } = entry;
+
+      // Get or create BranchStock record
+      let stock = await BranchStock.findOne({
+        where: { branch_id, product_id },
+        transaction: t
+      });
+
+      const countedQty = parseFloat(counted_quantity);
+      let previousQty = 0;
+
+      if (!stock) {
+        // No existing stock record - create one with counted quantity
+        stock = await BranchStock.create({
+          id: uuidv4(),
+          branch_id,
+          product_id,
+          quantity: countedQty,
+          reserved_quantity: 0,
+          expected_shrinkage: 0,
+          actual_shrinkage: 0,
+          last_counted_at: new Date(),
+          last_counted_quantity: countedQty,
+          min_stock: null,
+          max_stock: null
+        }, { transaction: t });
+
+        // Create INITIAL movement
+        await StockMovement.create({
+          id: uuidv4(),
+          branch_id,
+          product_id,
+          movement_type: 'INITIAL',
+          quantity: countedQty,
+          quantity_before: 0,
+          quantity_after: countedQty,
+          reference_type: 'INVENTORY_COUNT',
+          reference_id: null,
+          adjustment_reason: 'INVENTORY_COUNT',
+          notes: notes || 'Initial inventory count',
+          performed_by: req.user.id
+        }, { transaction: t });
+
+        results.processed++;
+        results.adjustments++;
+        results.details.push({
+          product_id,
+          previous_quantity: 0,
+          counted_quantity: countedQty,
+          variance: countedQty,
+          action: 'INITIAL'
+        });
+      } else {
+        // Existing stock - calculate variance
+        previousQty = parseFloat(stock.quantity);
+        const variance = countedQty - previousQty;
+
+        // Update stock with counted quantity and last count info
+        await stock.update({
+          quantity: countedQty,
+          last_counted_at: new Date(),
+          last_counted_quantity: countedQty
+        }, { transaction: t });
+
+        if (variance !== 0) {
+          // Create adjustment movement for variance
+          const movementType = variance > 0 ? 'ADJUSTMENT_PLUS' : 'ADJUSTMENT_MINUS';
+
+          await StockMovement.create({
+            id: uuidv4(),
+            branch_id,
+            product_id,
+            movement_type: movementType,
+            quantity: Math.abs(variance),
+            quantity_before: previousQty,
+            quantity_after: countedQty,
+            reference_type: 'INVENTORY_COUNT',
+            reference_id: null,
+            adjustment_reason: 'INVENTORY_COUNT',
+            notes: notes || `Inventory count variance: ${variance > 0 ? '+' : ''}${variance}`,
+            performed_by: req.user.id
+          }, { transaction: t });
+
+          results.adjustments++;
+          results.details.push({
+            product_id,
+            previous_quantity: previousQty,
+            counted_quantity: countedQty,
+            variance,
+            action: movementType
+          });
+        } else {
+          // No variance - just update last counted info
+          results.no_change++;
+          results.details.push({
+            product_id,
+            previous_quantity: previousQty,
+            counted_quantity: countedQty,
+            variance: 0,
+            action: 'NO_CHANGE'
+          });
+        }
+
+        results.processed++;
+      }
+    }
+
+    await t.commit();
+
+    logger.info(`Inventory count submitted for branch ${branch_id} by user ${req.user.id}: ${results.processed} items processed, ${results.adjustments} adjustments`);
+
+    return success(res, results, 'Inventory count processed successfully');
+  } catch (error) {
+    await t.rollback();
+    logger.error('Error submitting inventory count', { error: error.message, stack: error.stack });
     next(error);
   }
 };

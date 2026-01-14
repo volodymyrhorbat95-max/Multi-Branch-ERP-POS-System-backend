@@ -55,7 +55,43 @@ router.get(
  * @desc    Get invoice types (A, B, C)
  * @access  Private
  */
-router.get('/types', async (_req, res) => res.status(501).json({ message: 'Not implemented' }));
+router.get('/types', invoiceController.getInvoiceTypes);
+
+/**
+ * @route   GET /api/v1/invoices/status/pending
+ * @desc    Get pending invoices that need attention
+ * @access  Private
+ */
+router.get('/status/pending', [
+  ...paginationQuery,
+  query('branch_id').optional().isUUID(4),
+  validate
+], invoiceController.getPendingInvoices);
+
+/**
+ * @route   GET /api/v1/invoices/status/failed
+ * @desc    Get failed invoices
+ * @access  Private
+ */
+router.get('/status/failed', [
+  ...paginationQuery,
+  query('branch_id').optional().isUUID(4),
+  validate
+], invoiceController.getFailedInvoices);
+
+/**
+ * @route   POST /api/v1/invoices/retry-pending
+ * @desc    Retry all pending invoices (batch operation)
+ * @access  Private
+ */
+router.post(
+  '/retry-pending',
+  [
+    stringField('branch_id', { required: false }),
+    validate
+  ],
+  invoiceController.retryPendingBatch
+);
 
 /**
  * @route   GET /api/v1/invoices/:id
@@ -107,20 +143,6 @@ router.post(
 );
 
 /**
- * @route   GET /api/v1/invoices/pending
- * @desc    Get pending invoices that need attention
- * @access  Private
- */
-router.get('/status/pending', async (_req, res) => res.status(501).json({ message: 'Not implemented' }));
-
-/**
- * @route   GET /api/v1/invoices/failed
- * @desc    Get failed invoices
- * @access  Private
- */
-router.get('/status/failed', async (_req, res) => res.status(501).json({ message: 'Not implemented' }));
-
-/**
  * @route   GET /api/v1/invoices/credit-notes
  * @desc    Get credit notes
  * @access  Private
@@ -129,11 +151,24 @@ router.get(
   '/credit-notes/list',
   [
     ...paginationQuery,
+    query('branch_id').optional().isUUID(4),
+    query('status').optional().isIn(['PENDING', 'ISSUED', 'FAILED', 'CANCELLED']),
     query('from_date').optional().isISO8601(),
     query('to_date').optional().isISO8601(),
     validate
   ],
-  async (_req, res) => res.status(501).json({ message: 'Not implemented' })
+  invoiceController.getCreditNotes
+);
+
+/**
+ * @route   POST /api/v1/invoices/credit-notes/:id/retry
+ * @desc    Retry failed credit note
+ * @access  Private
+ */
+router.post(
+  '/credit-notes/:id/retry',
+  [uuidParam('id'), validate],
+  invoiceController.retryCreditNote
 );
 
 /**
@@ -144,7 +179,7 @@ router.get(
 router.get(
   '/credit-notes/:id',
   [uuidParam('id'), validate],
-  async (_req, res) => res.status(501).json({ message: 'Not implemented' })
+  invoiceController.getCreditNoteById
 );
 
 module.exports = router;

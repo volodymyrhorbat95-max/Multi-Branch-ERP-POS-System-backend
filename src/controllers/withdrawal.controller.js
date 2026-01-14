@@ -4,6 +4,7 @@ const { success, created, paginated } = require('../utils/apiResponse');
 const { NotFoundError, BusinessError } = require('../middleware/errorHandler');
 const { parsePagination } = require('../utils/helpers');
 const logger = require('../utils/logger');
+const { logCashWithdrawal } = require('../utils/auditLogger');
 
 /**
  * Create cash withdrawal
@@ -57,6 +58,9 @@ exports.createWithdrawal = async (req, res, next) => {
         { model: User, as: 'creator', attributes: ['id', 'first_name', 'last_name'] }
       ]
     });
+
+    // Create audit log entry for cash withdrawal
+    await logCashWithdrawal(req, withdrawal, null);
 
     logger.info(`Withdrawal created: ${amount} for ${recipient_name} by user ${req.user.id}`);
 
