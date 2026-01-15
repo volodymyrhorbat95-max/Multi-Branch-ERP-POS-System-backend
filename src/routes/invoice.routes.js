@@ -137,6 +137,18 @@ router.post(
   [
     uuidParam('id'),
     stringField('reason', { minLength: 1, maxLength: 255 }),
+    // CRITICAL FIX #8: Validate items array for partial credit notes
+    body('items').optional().isArray().withMessage('items must be an array'),
+    body('items.*.amount').optional().isFloat({ min: 0.01 }).withMessage('item amount must be positive'),
+    body('items.*.amount').optional().custom((value) => {
+      if (value === null || value === undefined) return true;
+      const strValue = String(value);
+      const decimalMatch = strValue.match(/\.(\d+)/);
+      if (decimalMatch && decimalMatch[1].length > 2) {
+        throw new Error('item amount cannot have more than 2 decimal places');
+      }
+      return true;
+    }),
     validate
   ],
   invoiceController.createCreditNote

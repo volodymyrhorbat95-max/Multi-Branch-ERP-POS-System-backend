@@ -87,6 +87,45 @@ router.post(
     body('payments.*.qr_provider').optional().isString().isLength({ max: 50 }),
     body('payments.*.qr_transaction_id').optional().isString().isLength({ max: 100 }),
     stringField('local_id', { maxLength: 50, required: false }),
+    // Invoice override validation (CRITICAL FIX #1)
+    body('invoice_override').optional().isObject().withMessage('invoice_override must be an object'),
+    body('invoice_override.invoice_type')
+      .optional()
+      .isIn(['A', 'B', 'C'])
+      .withMessage('invoice_override.invoice_type must be A, B, or C'),
+    body('invoice_override.customer_cuit')
+      .optional()
+      .matches(/^\d{2}-\d{8}-\d{1}$/)
+      .withMessage('invoice_override.customer_cuit must be in format XX-XXXXXXXX-X'),
+    body('invoice_override.customer_tax_condition')
+      .optional()
+      .isString()
+      .trim()
+      .notEmpty()
+      .isLength({ max: 100 })
+      .withMessage('invoice_override.customer_tax_condition must be a non-empty string'),
+    body('invoice_override.customer_address')
+      .optional()
+      .isString()
+      .trim()
+      .notEmpty()
+      .isLength({ max: 255 })
+      .withMessage('invoice_override.customer_address must be a non-empty string'),
+    // Type A validation: if invoice_type is 'A', customer_cuit, tax_condition, and address are required
+    body('invoice_override').custom((value, { req }) => {
+      if (value && value.invoice_type === 'A') {
+        if (!value.customer_cuit || !value.customer_cuit.trim()) {
+          throw new Error('invoice_override.customer_cuit is required for Type A invoices');
+        }
+        if (!value.customer_tax_condition || !value.customer_tax_condition.trim()) {
+          throw new Error('invoice_override.customer_tax_condition is required for Type A invoices');
+        }
+        if (!value.customer_address || !value.customer_address.trim()) {
+          throw new Error('invoice_override.customer_address is required for Type A invoices');
+        }
+      }
+      return true;
+    }),
     validate
   ],
   saleController.create

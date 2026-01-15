@@ -371,6 +371,16 @@ exports.create = async (req, res, next) => {
     let discountAppliedBy = null;
     let discountApprovedBy = null;
 
+    // Check if customer is wholesale and apply automatic discount
+    let wholesaleDiscount = 0;
+    if (customer_id) {
+      const customer = await Customer.findByPk(customer_id, { attributes: ['is_wholesale', 'wholesale_discount_percent'] });
+      if (customer && customer.is_wholesale && customer.wholesale_discount_percent) {
+        wholesaleDiscount = subtotal * (parseFloat(customer.wholesale_discount_percent) / 100);
+        logger.info(`Wholesale discount applied: ${customer.wholesale_discount_percent}% = $${wholesaleDiscount.toFixed(2)}`);
+      }
+    }
+
     if (discount_type && discount_value) {
       // New format from frontend
       actualDiscountType = discount_type;
@@ -389,7 +399,8 @@ exports.create = async (req, res, next) => {
       actualDiscountType = discount_amount ? 'FIXED' : 'PERCENT';
     }
 
-    // Validate discount permissions if manual discount applied (not wholesale)
+    // Validate discount permissions if MANUAL discount applied (wholesale is automatic)
+    // Only validate the MANUAL discount portion, not wholesale
     if (saleDiscount > 0 && actualDiscountType !== 'WHOLESALE') {
       // Check if user has permission to give discounts
       if (!req.user.permissions.canGiveDiscount) {
@@ -458,6 +469,9 @@ exports.create = async (req, res, next) => {
 
       discountAppliedBy = req.user.id;
     }
+
+    // Add wholesale discount to total sale discount AFTER permission validation
+    saleDiscount += wholesaleDiscount;
 
     // Calculate points redemption value (10 points = 1 peso, so 0.1 peso per point)
     const pointsValue = points_redeemed ? points_redeemed * 0.1 : 0;
@@ -1503,17 +1517,6 @@ async function generateInvoiceForSale(saleId, branchId, customerId, userId, invo
       throw new Error(`Invoice type ${invoiceType} not found in database`);
     }
 
-    // Get next invoice number for this branch and type
-    const lastInvoice = await Invoice.findOne({
-      where: {
-        point_of_sale: branch.factuhoy_point_of_sale || 1,
-        invoice_type_id: invoiceTypeRecord.id
-      },
-      order: [['invoice_number', 'DESC']]
-    });
-
-    const nextInvoiceNumber = lastInvoice ? lastInvoice.invoice_number + 1 : 1;
-
     // Calculate net amount (before tax)
     const totalAmount = parseFloat(sale.total_amount);
     const taxAmount = parseFloat(sale.tax_amount);
@@ -1554,23 +1557,43 @@ async function generateInvoiceForSale(saleId, branchId, customerId, userId, invo
       });
     }
 
-    // Create invoice record with PENDING status
-    const invoice = await Invoice.create({
-      id: uuidv4(),
-      sale_id: saleId,
-      invoice_type_id: invoiceTypeRecord.id,
-      point_of_sale: branch.factuhoy_point_of_sale || 1,
-      invoice_number: nextInvoiceNumber,
-      customer_name: customerData.name,
-      customer_document_type: customerData.document_type,
-      customer_document_number: customerData.document_number,
-      customer_tax_condition: customerData.tax_condition,
-      customer_address: customerData.address,
-      net_amount: netAmount,
-      tax_amount: taxAmount,
-      total_amount: totalAmount,
-      status: 'PENDING',
-      retry_count: 0
+    // CRITICAL FIX #5: Use transaction with SELECT FOR UPDATE to prevent race condition
+    // Get next invoice number atomically
+    const sequelize = Invoice.sequelize;
+    const invoice = await sequelize.transaction(async (t) => {
+      // Lock the last invoice row to prevent concurrent number generation
+      const lastInvoice = await Invoice.findOne({
+        where: {
+          point_of_sale: branch.factuhoy_point_of_sale || 1,
+          invoice_type_id: invoiceTypeRecord.id
+        },
+        order: [['invoice_number', 'DESC']],
+        lock: t.LOCK.UPDATE,
+        transaction: t
+      });
+
+      const nextInvoiceNumber = lastInvoice ? lastInvoice.invoice_number + 1 : 1;
+
+      // Create invoice record with PENDING status within the same transaction
+      const newInvoice = await Invoice.create({
+        id: uuidv4(),
+        sale_id: saleId,
+        invoice_type_id: invoiceTypeRecord.id,
+        point_of_sale: branch.factuhoy_point_of_sale || 1,
+        invoice_number: nextInvoiceNumber,
+        customer_name: customerData.name,
+        customer_document_type: customerData.document_type,
+        customer_document_number: customerData.document_number,
+        customer_tax_condition: customerData.tax_condition,
+        customer_address: customerData.address,
+        net_amount: netAmount,
+        tax_amount: taxAmount,
+        total_amount: totalAmount,
+        status: 'PENDING',
+        retry_count: 0
+      }, { transaction: t });
+
+      return newInvoice;
     });
 
     logger.info(`Invoice ${invoice.id} created for sale ${sale.sale_number}`, {
@@ -1673,7 +1696,7 @@ async function generateInvoiceForSale(saleId, branchId, customerId, userId, invo
         logger.warn(`Invoice ${invoice.id} marked as FAILED - manual intervention required`);
       }
 
-      // Create alert for failed invoice
+      // Create alert for failed invoice (CRITICAL FIX #2: Use SALE reference type consistently)
       const Alert = require('../database/models').Alert;
       const sale = await Sale.findByPk(saleId);
       await Alert.create({
@@ -1684,8 +1707,8 @@ async function generateInvoiceForSale(saleId, branchId, customerId, userId, invo
         user_id: sale?.created_by,
         title: result.retryable ? `Factura ${invoice.invoice_number || invoice.id} pendiente de reintento` : `Factura ${invoice.invoice_number || invoice.id} FALLÓ`,
         message: `Error al generar factura: ${result.error}. ${result.retryable ? 'Se puede reintentar manualmente.' : 'Requiere intervención manual.'}`,
-        reference_type: 'INVOICE',
-        reference_id: invoice.id
+        reference_type: 'SALE',
+        reference_id: sale.id
       });
 
       // Emit alert via Socket.io

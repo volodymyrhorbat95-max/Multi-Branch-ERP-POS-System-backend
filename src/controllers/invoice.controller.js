@@ -5,7 +5,7 @@ const {
 } = require('../database/models');
 const { success, created, paginated } = require('../utils/apiResponse');
 const { NotFoundError, BusinessError } = require('../middleware/errorHandler');
-const { parsePagination } = require('../utils/helpers');
+const { parsePagination, toDecimal } = require('../utils/helpers');
 const logger = require('../utils/logger');
 const factuHoyService = require('../services/factuhoy.service');
 
@@ -343,7 +343,7 @@ exports.createCreditNote = async (req, res, next) => {
       throw new BusinessError('Credit note already exists for this invoice');
     }
 
-    // Calculate credit note amounts
+    // Calculate credit note amounts (CRITICAL FIX #8: Use toDecimal for precision)
     let netAmount = 0;
     let taxAmount = 0;
     let totalAmount = 0;
@@ -351,16 +351,16 @@ exports.createCreditNote = async (req, res, next) => {
     if (items && items.length > 0) {
       // Partial credit note
       for (const item of items) {
-        totalAmount += parseFloat(item.amount);
+        totalAmount += toDecimal(item.amount);
       }
       // Estimate tax (21% for simplicity, should be calculated properly)
-      netAmount = totalAmount / 1.21;
-      taxAmount = totalAmount - netAmount;
+      netAmount = toDecimal(totalAmount / 1.21);
+      taxAmount = toDecimal(totalAmount - netAmount);
     } else {
       // Full credit note
-      netAmount = parseFloat(originalInvoice.net_amount);
-      taxAmount = parseFloat(originalInvoice.tax_amount);
-      totalAmount = parseFloat(originalInvoice.total_amount);
+      netAmount = toDecimal(originalInvoice.net_amount);
+      taxAmount = toDecimal(originalInvoice.tax_amount);
+      totalAmount = toDecimal(originalInvoice.total_amount);
     }
 
     // Determine credit note type based on original invoice
@@ -374,19 +374,21 @@ exports.createCreditNote = async (req, res, next) => {
     const branch = originalInvoice.sale?.branch;
     const pointOfSale = branch?.factuhoy_point_of_sale || 1;
 
-    // Find last credit note number for this POS and type
+    // CRITICAL FIX #7: Use SELECT FOR UPDATE lock to prevent race condition
+    // Find last credit note number for this POS and type with row lock
     const lastCreditNote = await CreditNote.findOne({
       where: {
         branch_id: branch.id,
         credit_note_type: creditNoteType
       },
       order: [['credit_note_number', 'DESC']],
+      lock: t.LOCK.UPDATE,
       transaction: t
     });
 
     const nextNumber = lastCreditNote ? lastCreditNote.credit_note_number + 1 : 1;
 
-    // Create credit note record
+    // Create credit note record within the same locked transaction
     const creditNote = await CreditNote.create({
       original_invoice_id: originalInvoice.id,
       credit_note_type: creditNoteType,

@@ -80,6 +80,22 @@ const formatDecimal = (value) => {
 };
 
 /**
+ * CRITICAL FIX #8: Safe decimal conversion with proper rounding
+ * Converts value to number and rounds to specified decimal places
+ * @param {number|string} value - Value to convert
+ * @param {number} decimals - Number of decimal places (default: 2)
+ * @returns {number} Safely converted and rounded number
+ */
+const toDecimal = (value, decimals = 2) => {
+  if (value === null || value === undefined || value === '') return 0;
+  const num = Number(value);
+  if (isNaN(num)) return 0;
+  // Use Math.round with power of 10 to avoid floating point issues
+  const factor = Math.pow(10, decimals);
+  return Math.round(num * factor) / factor;
+};
+
+/**
  * Parse pagination parameters from query
  * @param {Object} query - Express query object
  * @returns {Object} Pagination params
@@ -166,6 +182,7 @@ module.exports = {
   calculateMarginPercent,
   calculateSellingPrice,
   formatDecimal,
+  toDecimal,
   parsePagination,
   getBusinessDate,
   isPastClosingTime,

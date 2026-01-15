@@ -445,6 +445,11 @@ exports.closeSession = async (req, res, next) => {
       total_credit_given += parseFloat(sale.change_as_credit || 0);
     }
 
+    // CRITICAL FIX: Subtract change given as credit from expected cash
+    // When change is given as credit, that cash doesn't leave the register as physical money
+    // but it's recorded in the payment amount, so we must subtract it from expected cash
+    expected_cash -= total_credit_given;
+
     // Calculate discrepancies
     const discrepancy_cash = declared_cash - expected_cash;
     const discrepancy_card = declared_card - expected_card;

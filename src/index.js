@@ -14,6 +14,7 @@ const errorHandler = require('./middleware/errorHandler');
 const { setupSocketIO } = require('./socket');
 const logger = require('./utils/logger');
 const invoiceRetryScheduler = require('./schedulers/invoiceRetry');
+const lateClosingCheckJob = require('./jobs/late-closing-check.job');
 
 const app = express();
 const httpServer = createServer(app);
@@ -86,6 +87,9 @@ const startServer = async () => {
 
       // Start invoice retry scheduler after server is running
       invoiceRetryScheduler.start();
+
+      // Start late closing check job (runs every hour)
+      lateClosingCheckJob.start(3600000); // 1 hour
     });
   } catch (error) {
     logger.error('Unable to start server:', error);
@@ -97,6 +101,7 @@ const startServer = async () => {
 process.on('SIGTERM', async () => {
   logger.info('SIGTERM received. Shutting down gracefully...');
   invoiceRetryScheduler.stop();
+  lateClosingCheckJob.stop();
   await sequelize.close();
   httpServer.close(() => {
     logger.info('Server closed');
@@ -107,6 +112,7 @@ process.on('SIGTERM', async () => {
 process.on('SIGINT', async () => {
   logger.info('SIGINT received. Shutting down gracefully...');
   invoiceRetryScheduler.stop();
+  lateClosingCheckJob.stop();
   await sequelize.close();
   httpServer.close(() => {
     logger.info('Server closed');

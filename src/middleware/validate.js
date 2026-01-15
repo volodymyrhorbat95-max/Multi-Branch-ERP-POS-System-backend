@@ -74,8 +74,10 @@ const pinField = (fieldName = 'pin_code') =>
 
 /**
  * Decimal/number field validation
+ * CRITICAL FIX #4: Add precision validation to prevent data loss
+ * Database uses DECIMAL(12,2) - max 2 decimal places
  */
-const decimalField = (fieldName, { min, max, required = true } = {}) => {
+const decimalField = (fieldName, { min, max, required = true, maxDecimals = 2 } = {}) => {
   let chain = body(fieldName)
     .isFloat()
     .withMessage(`${fieldName} must be a valid number`);
@@ -87,6 +89,17 @@ const decimalField = (fieldName, { min, max, required = true } = {}) => {
   if (max !== undefined) {
     chain = chain.isFloat({ max }).withMessage(`${fieldName} must be at most ${max}`);
   }
+
+  // Add custom validator for decimal precision
+  chain = chain.custom((value) => {
+    if (value === null || value === undefined) return true;
+    const strValue = String(value);
+    const decimalMatch = strValue.match(/\.(\d+)/);
+    if (decimalMatch && decimalMatch[1].length > maxDecimals) {
+      throw new Error(`${fieldName} cannot have more than ${maxDecimals} decimal places`);
+    }
+    return true;
+  });
 
   return required ? chain : chain.optional({ nullable: true });
 };
