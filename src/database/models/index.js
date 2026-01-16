@@ -22,7 +22,7 @@ const sequelize = new Sequelize(
 // Import all models
 const Branch = require('./Branch')(sequelize);
 const Role = require('./Role')(sequelize);
-const User = require('./user')(sequelize);
+const User = require('./User')(sequelize);
 const UserBranch = require('./UserBranch')(sequelize);
 const UserSession = require('./UserSession')(sequelize);
 const Category = require('./Category')(sequelize);
@@ -47,7 +47,7 @@ const RegisterSession = require('./RegisterSession')(sequelize);
 const CashWithdrawal = require('./CashWithdrawal')(sequelize);
 const DailyReport = require('./DailyReport')(sequelize);
 const PaymentMethod = require('./PaymentMethod')(sequelize);
-const Sale = require('./sale')(sequelize);
+const Sale = require('./Sale')(sequelize);
 const SaleItem = require('./SaleItem')(sequelize);
 const SalePayment = require('./SalePayment')(sequelize);
 const InvoiceType = require('./InvoiceType')(sequelize);
