@@ -8,7 +8,8 @@ const {
   stringField,
   enumField,
   paginationQuery,
-  query
+  query,
+  body
 } = require('../middleware/validate');
 
 // All routes require authentication
