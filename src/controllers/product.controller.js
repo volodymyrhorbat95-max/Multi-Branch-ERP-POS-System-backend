@@ -340,6 +340,17 @@ exports.bulkUpdateByMargin = async (req, res, next) => {
   }
 };
 
+exports.getUnits = async (req, res, next) => {
+  try {
+    const units = await UnitOfMeasure.findAll({
+      order: [['name', 'ASC']]
+    });
+    return success(res, units);
+  } catch (error) {
+    next(error);
+  }
+};
+
 // Bulk price update by supplier
 exports.bulkUpdateBySupplier = async (req, res, next) => {
   const t = await sequelize.transaction();

@@ -54,6 +54,13 @@ router.get(
 );
 
 /**
+ * @route   GET /api/v1/products/units
+ * @desc    Get all units of measure
+ * @access  Private
+ */
+router.get('/units', productController.getUnits);
+
+/**
  * @route   GET /api/v1/products/barcode/:barcode
  * @desc    Get product by barcode
  * @access  Private
