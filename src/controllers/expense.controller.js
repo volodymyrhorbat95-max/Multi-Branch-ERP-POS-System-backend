@@ -1,11 +1,14 @@
 const expenseService = require('../services/expense.service');
-const { success, created } = require('../utils/apiResponse');
+const { success, created, paginated } = require('../utils/apiResponse');
+const { parsePagination } = require('../utils/helpers');
 
 /**
- * Get all expenses with filters
+ * Get all expenses with filters and pagination
  */
 exports.getAllExpenses = async (req, res, next) => {
   try {
+    const { page, limit, offset, sortBy, sortOrder } = parsePagination(req.query);
+
     const filters = {
       from_date: req.query.from_date,
       to_date: req.query.to_date,
@@ -15,8 +18,8 @@ exports.getAllExpenses = async (req, res, next) => {
       search: req.query.search
     };
 
-    const expenses = await expenseService.getAllExpenses(filters);
-    return success(res, expenses, 'Expenses retrieved successfully');
+    const { rows: expenses, count: total } = await expenseService.getAllExpenses(filters, { limit, offset, sortBy, sortOrder });
+    return paginated(res, expenses, { page, limit, total_items: total });
   } catch (error) {
     next(error);
   }

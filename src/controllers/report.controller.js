@@ -102,6 +102,7 @@ exports.generateDailyReportData = async (branchId, date) => {
       opened_by: session.opener ? `${session.opener.first_name} ${session.opener.last_name}` : null,
       closed_by: session.closer ? `${session.closer.first_name} ${session.closer.last_name}` : null,
       status: session.status,
+      opening_cash: session.opening_cash ? parseFloat(session.opening_cash) : null,
       sales_count: sessionSales.length,
       total_revenue: totalRevenue,
       expected_cash: paymentTotals.cash,
@@ -424,7 +425,15 @@ exports.getOwnerDashboard = async (req, res, next) => {
       daily_trend: dailyTrend,
       discrepancies,
       shrinkage,
-      top_products: topProducts
+      top_products: topProducts.map((p) => ({
+        product_id: p.product_id,
+        total_quantity: parseFloat(p.toJSON().total_quantity) || 0,
+        total_revenue: parseFloat(p.toJSON().total_revenue) || 0,
+        product: p.product ? {
+          name: p.product.name,
+          sku: p.product.sku
+        } : null
+      }))
     });
   } catch (error) {
     next(error);

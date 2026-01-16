@@ -38,9 +38,9 @@ class ExpenseService {
   }
 
   /**
-   * Get all expenses with optional filters
+   * Get all expenses with optional filters and pagination
    */
-  async getAllExpenses(filters = {}) {
+  async getAllExpenses(filters = {}, pagination = {}) {
     const where = {};
 
     // Date range filter
@@ -74,7 +74,14 @@ class ExpenseService {
       ];
     }
 
-    return Expense.findAll({
+    // Build order clause
+    const sortBy = pagination.sortBy || 'expense_date';
+    const sortOrder = pagination.sortOrder || 'DESC';
+    const order = sortBy === 'expense_date'
+      ? [[sortBy, sortOrder], ['created_at', 'DESC']]
+      : [[sortBy, sortOrder]];
+
+    return Expense.findAndCountAll({
       where,
       include: [
         {
@@ -100,7 +107,10 @@ class ExpenseService {
           required: false
         }
       ],
-      order: [['expense_date', 'DESC'], ['created_at', 'DESC']]
+      order,
+      limit: pagination.limit,
+      offset: pagination.offset,
+      distinct: true
     });
   }
 
