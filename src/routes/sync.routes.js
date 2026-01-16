@@ -48,7 +48,7 @@ router.post(
   '/pull',
   [
     uuidField('branch_id'),
-    body('last_sync_at').optional().isISO8601(),
+    body('last_sync_at').optional({ nullable: true }).isISO8601(),
     arrayField('entity_types', { required: false }),
     validate
   ],

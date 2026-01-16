@@ -31,6 +31,7 @@ exports.getAll = async (req, res, next) => {
     }
 
     // Build include array with branch filter through Sale
+    // Note: Invoice stores customer data as snapshot fields, not as FK to Customer
     const include = [
       {
         model: Sale,
@@ -44,7 +45,6 @@ exports.getAll = async (req, res, next) => {
           { model: Branch, as: 'branch', attributes: ['name', 'code'] }
         ]
       },
-      { model: Customer, as: 'customer', attributes: ['first_name', 'last_name', 'company_name', 'document_number'] },
       { model: InvoiceType, as: 'invoice_type', attributes: ['code', 'name'] }
     ];
 
@@ -91,8 +91,8 @@ exports.getBySale = async (req, res, next) => {
     const invoices = await Invoice.findAll({
       where: { sale_id: req.params.saleId },
       include: [
-        { model: Customer, as: 'customer' },
-        { model: Branch, as: 'branch' }
+        { model: InvoiceType, as: 'invoice_type', attributes: ['code', 'name'] },
+        { model: Sale, as: 'sale', include: [{ model: Branch, as: 'branch', attributes: ['name', 'code'] }] }
       ],
       order: [['created_at', 'DESC']]
     });

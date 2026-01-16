@@ -1,7 +1,7 @@
 const { Op } = require('sequelize');
 const {
   Sale, SaleItem, SalePayment, RegisterSession, DailyReport, Branch, User, Product,
-  Category, Customer, PaymentMethod, BranchStock, sequelize
+  Category, Customer, PaymentMethod, BranchStock, StockMovement, sequelize
 } = require('../database/models');
 const { success } = require('../utils/apiResponse');
 const { NotFoundError } = require('../middleware/errorHandler');
@@ -15,7 +15,7 @@ exports.getDailyReport = async (req, res, next) => {
 
     // Try to get existing report
     let report = await DailyReport.findOne({
-      where: { branch_id, report_date: dateString },
+      where: { branch_id, business_date: dateString },
       include: [{ model: Branch, as: 'branch', attributes: ['name', 'code'] }]
     });
 
@@ -170,7 +170,6 @@ exports.generateDailyReportData = async (branchId, date) => {
         attributes: ['name', 'code']
       }
     ],
-    where: { status: 'APPROVED' },
     group: ['payment_method_id', 'payment_method.id', 'payment_method.name', 'payment_method.code']
   });
 
@@ -182,8 +181,8 @@ exports.generateDailyReportData = async (branchId, date) => {
     },
     attributes: [
       [sequelize.fn('COUNT', sequelize.col('id')), 'total_sessions'],
-      [sequelize.fn('SUM', sequelize.col('opening_amount')), 'total_opening'],
-      [sequelize.fn('SUM', sequelize.col('closing_amount')), 'total_closing'],
+      [sequelize.fn('SUM', sequelize.col('opening_cash')), 'total_opening'],
+      [sequelize.fn('SUM', sequelize.col('declared_cash')), 'total_closing'],
       [sequelize.fn('SUM', sequelize.col('discrepancy_cash')), 'total_discrepancy']
     ]
   });
@@ -213,22 +212,24 @@ exports.generateDailyReportData = async (branchId, date) => {
     limit: 10
   });
 
-  // Hourly breakdown
-  const hourlyData = await sequelize.query(`
-    SELECT
-      EXTRACT(HOUR FROM created_at) as hour,
-      COUNT(*) as sales_count,
-      SUM(total_amount) as revenue
-    FROM sales
-    WHERE branch_id = :branchId
-      AND status = 'COMPLETED'
-      AND created_at BETWEEN :startOfDay AND :endOfDay
-    GROUP BY EXTRACT(HOUR FROM created_at)
-    ORDER BY hour
-  `, {
-    replacements: { branchId, startOfDay, endOfDay },
-    type: sequelize.QueryTypes.SELECT
+  // Hourly breakdown using Sequelize ORM
+  const hourlyDataRaw = await Sale.findAll({
+    where: saleWhere,
+    attributes: [
+      [sequelize.fn('EXTRACT', sequelize.literal('HOUR FROM "Sale"."created_at"')), 'hour'],
+      [sequelize.fn('COUNT', sequelize.col('id')), 'sales_count'],
+      [sequelize.fn('SUM', sequelize.col('total_amount')), 'revenue']
+    ],
+    group: [sequelize.fn('EXTRACT', sequelize.literal('HOUR FROM "Sale"."created_at"'))],
+    order: [[sequelize.fn('EXTRACT', sequelize.literal('HOUR FROM "Sale"."created_at"')), 'ASC']],
+    raw: true
   });
+
+  const hourlyData = hourlyDataRaw.map(h => ({
+    hour: parseInt(h.hour),
+    sales_count: parseInt(h.sales_count) || 0,
+    revenue: parseFloat(h.revenue) || 0
+  }));
 
   // Calculate daily totals from shifts
   const dailyTotals = {
@@ -255,25 +256,25 @@ exports.generateDailyReportData = async (branchId, date) => {
     shifts: shiftsData,
     daily_totals: dailyTotals,
     sales: {
-      total_count: parseInt(salesData?.toJSON().total_sales) || 0,
-      total_revenue: parseFloat(salesData?.toJSON().total_revenue) || 0,
-      total_tax: parseFloat(salesData?.toJSON().total_tax) || 0,
-      total_discounts: parseFloat(salesData?.toJSON().total_discounts) || 0,
-      average_ticket: parseFloat(salesData?.toJSON().average_ticket) || 0,
-      voided_count: parseInt(voidedData?.toJSON().voided_count) || 0,
-      voided_amount: parseFloat(voidedData?.toJSON().voided_amount) || 0
+      total_count: parseInt(salesData?.toJSON()?.total_sales) || 0,
+      total_revenue: parseFloat(salesData?.toJSON()?.total_revenue) || 0,
+      total_tax: parseFloat(salesData?.toJSON()?.total_tax) || 0,
+      total_discounts: parseFloat(salesData?.toJSON()?.total_discounts) || 0,
+      average_ticket: parseFloat(salesData?.toJSON()?.average_ticket) || 0,
+      voided_count: parseInt(voidedData?.toJSON()?.voided_count) || 0,
+      voided_amount: parseFloat(voidedData?.toJSON()?.voided_amount) || 0
     },
     payments: paymentBreakdown.map((p) => ({
       method: p.payment_method?.name,
       code: p.payment_method?.code,
-      total: parseFloat(p.toJSON().total)
+      total: parseFloat(p.toJSON()?.total) || 0
     })),
     sessions: sessionSummary[0]?.toJSON() || {},
     top_products: topProducts.map((p) => ({
       product: p.product?.name,
       sku: p.product?.sku,
-      quantity: parseFloat(p.toJSON().total_quantity),
-      revenue: parseFloat(p.toJSON().total_revenue)
+      quantity: parseFloat(p.toJSON()?.total_quantity) || 0,
+      revenue: parseFloat(p.toJSON()?.total_revenue) || 0
     })),
     hourly: hourlyData
   };
@@ -320,21 +321,27 @@ exports.getOwnerDashboard = async (req, res, next) => {
       group: ['branch_id', 'branch.id', 'branch.name', 'branch.code']
     });
 
-    // Daily trend
-    const dailyTrend = await sequelize.query(`
-      SELECT
-        DATE(created_at) as date,
-        COUNT(*) as sales_count,
-        SUM(total_amount) as revenue
-      FROM sales
-      WHERE status = 'COMPLETED'
-        AND created_at BETWEEN :startDate AND :endDate
-      GROUP BY DATE(created_at)
-      ORDER BY date
-    `, {
-      replacements: { startDate, endDate },
-      type: sequelize.QueryTypes.SELECT
+    // Daily trend using Sequelize ORM
+    const dailyTrendRaw = await Sale.findAll({
+      where: {
+        status: 'COMPLETED',
+        created_at: { [Op.between]: [startDate, endDate] }
+      },
+      attributes: [
+        [sequelize.fn('DATE', sequelize.col('created_at')), 'date'],
+        [sequelize.fn('COUNT', sequelize.col('id')), 'sales_count'],
+        [sequelize.fn('SUM', sequelize.col('total_amount')), 'revenue']
+      ],
+      group: [sequelize.fn('DATE', sequelize.col('created_at'))],
+      order: [[sequelize.fn('DATE', sequelize.col('created_at')), 'ASC']],
+      raw: true
     });
+
+    const dailyTrend = dailyTrendRaw.map(d => ({
+      date: d.date,
+      sales_count: parseInt(d.sales_count) || 0,
+      revenue: parseFloat(d.revenue) || 0
+    }));
 
     // Cash discrepancies
     const discrepancies = await RegisterSession.findAll({
@@ -351,23 +358,30 @@ exports.getOwnerDashboard = async (req, res, next) => {
       group: ['branch_id', 'branch.id', 'branch.name', 'branch.code']
     });
 
-    // Shrinkage summary from stock_movements
-    const shrinkageMovements = await sequelize.query(`
-      SELECT
-        COUNT(*) as total_records,
-        SUM(ABS(sm.quantity) * p.cost_price) as total_cost_loss
-      FROM stock_movements sm
-      JOIN products p ON sm.product_id = p.id
-      WHERE sm.movement_type = 'SHRINKAGE'
-        AND sm.created_at BETWEEN :startDate AND :endDate
-    `, {
-      replacements: { startDate, endDate },
-      type: sequelize.QueryTypes.SELECT
+    // Shrinkage summary using Sequelize ORM
+    const shrinkageMovements = await StockMovement.findAll({
+      where: {
+        movement_type: 'SHRINKAGE',
+        created_at: { [Op.between]: [startDate, endDate] }
+      },
+      include: [{
+        model: Product,
+        as: 'product',
+        attributes: ['cost_price']
+      }]
+    });
+
+    // Calculate totals manually
+    let totalCostLoss = 0;
+    shrinkageMovements.forEach(sm => {
+      const quantity = Math.abs(parseFloat(sm.quantity) || 0);
+      const costPrice = parseFloat(sm.product?.cost_price) || 0;
+      totalCostLoss += quantity * costPrice;
     });
 
     const shrinkage = {
-      total_records: parseInt(shrinkageMovements[0]?.total_records) || 0,
-      total_cost_loss: parseFloat(shrinkageMovements[0]?.total_cost_loss) || 0
+      total_records: shrinkageMovements.length,
+      total_cost_loss: totalCostLoss
     };
 
     // Top selling products overall
@@ -657,44 +671,45 @@ exports.getSalesReport = async (req, res, next) => {
     const startDate = from_date ? new Date(from_date) : new Date(endDate.getTime() - 30 * 24 * 60 * 60 * 1000);
     where.created_at = { [Op.between]: [startDate, endDate] };
 
-    let groupByClause;
-    let selectDate;
+    // Build DATE_TRUNC function based on group_by using Sequelize ORM
+    let dateTruncFn;
     switch (group_by) {
       case 'hour':
-        groupByClause = "DATE_TRUNC('hour', created_at)";
-        selectDate = "DATE_TRUNC('hour', created_at)";
+        dateTruncFn = sequelize.fn('DATE_TRUNC', 'hour', sequelize.col('created_at'));
         break;
       case 'week':
-        groupByClause = "DATE_TRUNC('week', created_at)";
-        selectDate = "DATE_TRUNC('week', created_at)";
+        dateTruncFn = sequelize.fn('DATE_TRUNC', 'week', sequelize.col('created_at'));
         break;
       case 'month':
-        groupByClause = "DATE_TRUNC('month', created_at)";
-        selectDate = "DATE_TRUNC('month', created_at)";
+        dateTruncFn = sequelize.fn('DATE_TRUNC', 'month', sequelize.col('created_at'));
         break;
       default:
-        groupByClause = 'DATE(created_at)';
-        selectDate = 'DATE(created_at)';
+        dateTruncFn = sequelize.fn('DATE', sequelize.col('created_at'));
     }
 
-    const salesData = await sequelize.query(`
-      SELECT
-        ${selectDate} as period,
-        COUNT(*) as sales_count,
-        SUM(total_amount) as revenue,
-        SUM(tax_amount) as tax,
-        SUM(discount_amount) as discounts,
-        AVG(total_amount) as avg_ticket
-      FROM sales
-      WHERE status = 'COMPLETED'
-        AND ${branch_id ? 'branch_id = :branchId AND' : ''}
-        created_at BETWEEN :startDate AND :endDate
-      GROUP BY ${groupByClause}
-      ORDER BY period
-    `, {
-      replacements: { branchId: branch_id, startDate, endDate },
-      type: sequelize.QueryTypes.SELECT
+    const salesDataRaw = await Sale.findAll({
+      where,
+      attributes: [
+        [dateTruncFn, 'period'],
+        [sequelize.fn('COUNT', sequelize.col('id')), 'sales_count'],
+        [sequelize.fn('SUM', sequelize.col('total_amount')), 'revenue'],
+        [sequelize.fn('SUM', sequelize.col('tax_amount')), 'tax'],
+        [sequelize.fn('SUM', sequelize.col('discount_amount')), 'discounts'],
+        [sequelize.fn('AVG', sequelize.col('total_amount')), 'avg_ticket']
+      ],
+      group: [dateTruncFn],
+      order: [[dateTruncFn, 'ASC']],
+      raw: true
     });
+
+    const salesData = salesDataRaw.map(s => ({
+      period: s.period,
+      sales_count: parseInt(s.sales_count) || 0,
+      revenue: parseFloat(s.revenue) || 0,
+      tax: parseFloat(s.tax) || 0,
+      discounts: parseFloat(s.discounts) || 0,
+      avg_ticket: parseFloat(s.avg_ticket) || 0
+    }));
 
     // Totals
     const totals = await Sale.findOne({
@@ -958,12 +973,13 @@ exports.getCategoryReport = async (req, res, next) => {
     };
     if (branch_id) saleWhere.branch_id = branch_id;
 
-    // Sales by category
+    // Get category sales data using Sequelize ORM
     const categoryData = await SaleItem.findAll({
       attributes: [
         [sequelize.fn('SUM', sequelize.col('quantity')), 'total_quantity'],
         [sequelize.fn('SUM', sequelize.col('SaleItem.line_total')), 'total_revenue'],
-        [sequelize.fn('COUNT', sequelize.literal('DISTINCT sale_id')), 'transaction_count'],
+        [sequelize.fn('SUM', sequelize.literal('"SaleItem"."quantity" * "product"."cost_price"')), 'total_cost'],
+        [sequelize.fn('COUNT', sequelize.literal('DISTINCT "SaleItem"."sale_id"')), 'transaction_count'],
         [sequelize.fn('AVG', sequelize.col('SaleItem.line_total')), 'avg_sale']
       ],
       include: [
@@ -976,7 +992,7 @@ exports.getCategoryReport = async (req, res, next) => {
         {
           model: Product,
           as: 'product',
-          attributes: ['category_id'],
+          attributes: [],
           include: [{
             model: Category,
             as: 'category',
@@ -984,60 +1000,30 @@ exports.getCategoryReport = async (req, res, next) => {
           }]
         }
       ],
-      group: ['product.category.id', 'product.category.name', 'product.category.description'],
-      order: [[sequelize.fn('SUM', sequelize.col('SaleItem.line_total')), 'DESC']]
+      group: ['product->category.id', 'product->category.name', 'product->category.description'],
+      order: [[sequelize.fn('SUM', sequelize.col('SaleItem.line_total')), 'DESC']],
+      raw: true,
+      nest: true
     });
 
-    // Calculate profit margin by category
-    const categoriesWithMargin = await Promise.all(categoryData.map(async (cat) => {
-      const categoryId = cat.product?.category?.id;
-
-      if (!categoryId) {
-        return {
-          category_id: null,
-          category_name: 'Sin Categoría',
-          total_quantity: parseFloat(cat.toJSON().total_quantity),
-          total_revenue: parseFloat(cat.toJSON().total_revenue),
-          transaction_count: parseInt(cat.toJSON().transaction_count),
-          avg_sale: parseFloat(cat.toJSON().avg_sale),
-          total_cost: 0,
-          margin_percent: 0
-        };
-      }
-
-      // Calculate total cost for products in this category
-      const costData = await sequelize.query(`
-        SELECT
-          SUM(si.quantity * p.cost_price) as total_cost,
-          SUM(si.line_total) as total_revenue
-        FROM sale_items si
-        INNER JOIN sales s ON si.sale_id = s.id
-        INNER JOIN products p ON si.product_id = p.id
-        WHERE s.status = 'COMPLETED'
-          AND s.created_at BETWEEN :startDate AND :endDate
-          ${branch_id ? 'AND s.branch_id = :branchId' : ''}
-          AND p.category_id = :categoryId
-      `, {
-        replacements: { startDate, endDate, branchId: branch_id, categoryId },
-        type: sequelize.QueryTypes.SELECT
-      });
-
-      const totalCost = parseFloat(costData[0]?.total_cost) || 0;
-      const totalRevenue = parseFloat(costData[0]?.total_revenue) || 0;
+    // Calculate margin for each category
+    const categoriesWithMargin = categoryData.map(cat => {
+      const totalRevenue = parseFloat(cat.total_revenue) || 0;
+      const totalCost = parseFloat(cat.total_cost) || 0;
       const marginPercent = totalRevenue > 0 ? ((totalRevenue - totalCost) / totalRevenue) * 100 : 0;
 
       return {
-        category_id: categoryId,
-        category_name: cat.product?.category?.name,
-        category_description: cat.product?.category?.description,
-        total_quantity: parseFloat(cat.toJSON().total_quantity),
+        category_id: cat.product?.category?.id || null,
+        category_name: cat.product?.category?.name || 'Sin Categoría',
+        category_description: cat.product?.category?.description || null,
+        total_quantity: parseFloat(cat.total_quantity) || 0,
         total_revenue: totalRevenue,
         total_cost: totalCost,
-        transaction_count: parseInt(cat.toJSON().transaction_count),
-        avg_sale: parseFloat(cat.toJSON().avg_sale),
+        transaction_count: parseInt(cat.transaction_count) || 0,
+        avg_sale: parseFloat(cat.avg_sale) || 0,
         margin_percent: marginPercent.toFixed(2)
       };
-    }));
+    });
 
     // Overall totals
     const totalRevenue = categoriesWithMargin.reduce((sum, c) => sum + c.total_revenue, 0);
@@ -1184,7 +1170,7 @@ exports.getPaymentMethodReport = async (req, res, next) => {
     };
     if (branch_id) saleWhere.branch_id = branch_id;
 
-    // Payment breakdown by method
+    // Payment breakdown by method using Sequelize ORM
     const paymentData = await SalePayment.findAll({
       attributes: [
         'payment_method_id',
@@ -1207,21 +1193,22 @@ exports.getPaymentMethodReport = async (req, res, next) => {
           attributes: ['id', 'name', 'code', 'type']
         }
       ],
-      where: { status: 'APPROVED' },
       group: ['payment_method_id', 'payment_method.id', 'payment_method.name', 'payment_method.code', 'payment_method.type'],
-      order: [[sequelize.fn('SUM', sequelize.col('amount')), 'DESC']]
+      order: [[sequelize.fn('SUM', sequelize.col('amount')), 'DESC']],
+      raw: true,
+      nest: true
     });
 
     const payments = paymentData.map(p => ({
-      payment_method_id: p.payment_method?.id,
+      payment_method_id: p.payment_method_id,
       payment_method: p.payment_method?.name,
       code: p.payment_method?.code,
       type: p.payment_method?.type,
-      transaction_count: parseInt(p.toJSON().transaction_count),
-      total_amount: parseFloat(p.toJSON().total_amount),
-      avg_amount: parseFloat(p.toJSON().avg_amount),
-      min_amount: parseFloat(p.toJSON().min_amount),
-      max_amount: parseFloat(p.toJSON().max_amount)
+      transaction_count: parseInt(p.transaction_count) || 0,
+      total_amount: parseFloat(p.total_amount) || 0,
+      avg_amount: parseFloat(p.avg_amount) || 0,
+      min_amount: parseFloat(p.min_amount) || 0,
+      max_amount: parseFloat(p.max_amount) || 0
     }));
 
     // Overall totals
@@ -1234,27 +1221,49 @@ exports.getPaymentMethodReport = async (req, res, next) => {
       percentage: totalAmount > 0 ? ((p.total_amount / totalAmount) * 100).toFixed(2) : 0
     }));
 
-    // Daily breakdown
-    const dailyBreakdown = await sequelize.query(`
-      SELECT
-        DATE(s.created_at) as date,
-        pm.name as payment_method,
-        pm.code,
-        COUNT(sp.id) as transaction_count,
-        SUM(sp.amount) as total_amount
-      FROM sale_payments sp
-      INNER JOIN sales s ON sp.sale_id = s.id
-      INNER JOIN payment_methods pm ON sp.payment_method_id = pm.id
-      WHERE s.status = 'COMPLETED'
-        AND s.created_at BETWEEN :startDate AND :endDate
-        ${branch_id ? 'AND s.branch_id = :branchId' : ''}
-        AND sp.status = 'APPROVED'
-      GROUP BY DATE(s.created_at), pm.id, pm.name, pm.code
-      ORDER BY date DESC, total_amount DESC
-    `, {
-      replacements: { startDate, endDate, branchId: branch_id },
-      type: sequelize.QueryTypes.SELECT
+    // Daily breakdown using Sequelize ORM
+    const dailyBreakdownRaw = await SalePayment.findAll({
+      attributes: [
+        [sequelize.fn('DATE', sequelize.col('sale.created_at')), 'date'],
+        'payment_method_id',
+        [sequelize.fn('COUNT', sequelize.col('SalePayment.id')), 'transaction_count'],
+        [sequelize.fn('SUM', sequelize.col('amount')), 'total_amount']
+      ],
+      include: [
+        {
+          model: Sale,
+          as: 'sale',
+          where: saleWhere,
+          attributes: []
+        },
+        {
+          model: PaymentMethod,
+          as: 'payment_method',
+          attributes: ['name', 'code']
+        }
+      ],
+      group: [
+        sequelize.fn('DATE', sequelize.col('sale.created_at')),
+        'payment_method_id',
+        'payment_method.id',
+        'payment_method.name',
+        'payment_method.code'
+      ],
+      order: [
+        [sequelize.fn('DATE', sequelize.col('sale.created_at')), 'DESC'],
+        [sequelize.fn('SUM', sequelize.col('amount')), 'DESC']
+      ],
+      raw: true,
+      nest: true
     });
+
+    const dailyBreakdown = dailyBreakdownRaw.map(d => ({
+      date: d.date,
+      payment_method: d.payment_method?.name,
+      code: d.payment_method?.code,
+      transaction_count: parseInt(d.transaction_count) || 0,
+      total_amount: parseFloat(d.total_amount) || 0
+    }));
 
     return success(res, {
       period: { start_date: startDate, end_date: endDate },
@@ -1279,46 +1288,72 @@ exports.getShrinkageReport = async (req, res, next) => {
     const endDate = to_date ? new Date(to_date) : new Date();
     const startDate = from_date ? new Date(from_date) : new Date(endDate.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-    // Get shrinkage movements from stock_movements table
-    const shrinkageQuery = `
-      SELECT
-        sm.id as movement_id,
-        sm.created_at,
-        sm.quantity,
-        sm.reason,
-        sm.notes,
-        b.id as branch_id,
-        b.name as branch_name,
-        b.code as branch_code,
-        p.id as product_id,
-        p.name as product_name,
-        p.sku,
-        p.cost_price,
-        p.selling_price,
-        c.name as category_name,
-        u.first_name || ' ' || u.last_name as created_by_name,
-        (ABS(sm.quantity) * p.cost_price) as cost_loss,
-        (ABS(sm.quantity) * p.selling_price) as retail_loss
-      FROM stock_movements sm
-      INNER JOIN products p ON sm.product_id = p.id
-      INNER JOIN branches b ON sm.branch_id = b.id
-      LEFT JOIN categories c ON p.category_id = c.id
-      LEFT JOIN users u ON sm.created_by = u.id
-      WHERE sm.movement_type = 'SHRINKAGE'
-        AND sm.created_at BETWEEN :startDate AND :endDate
-        ${branch_id ? 'AND sm.branch_id = :branchId' : ''}
-      ORDER BY sm.created_at DESC
-    `;
+    // Build where clause for shrinkage movements
+    const movementWhere = {
+      movement_type: 'SHRINKAGE',
+      created_at: { [Op.between]: [startDate, endDate] }
+    };
+    if (branch_id) movementWhere.branch_id = branch_id;
 
-    const shrinkageData = await sequelize.query(shrinkageQuery, {
-      replacements: { startDate, endDate, branchId: branch_id },
-      type: sequelize.QueryTypes.SELECT
+    // Get shrinkage movements using Sequelize ORM
+    const shrinkageMovements = await StockMovement.findAll({
+      where: movementWhere,
+      include: [
+        {
+          model: Product,
+          as: 'product',
+          attributes: ['id', 'name', 'sku', 'cost_price', 'selling_price'],
+          include: [{
+            model: Category,
+            as: 'category',
+            attributes: ['name']
+          }]
+        },
+        {
+          model: Branch,
+          as: 'branch',
+          attributes: ['id', 'name', 'code']
+        },
+        {
+          model: User,
+          as: 'performer',
+          attributes: ['first_name', 'last_name']
+        }
+      ],
+      order: [['created_at', 'DESC']]
+    });
+
+    // Transform data to match original format
+    const shrinkageData = shrinkageMovements.map(sm => {
+      const costPrice = parseFloat(sm.product?.cost_price) || 0;
+      const sellingPrice = parseFloat(sm.product?.selling_price) || 0;
+      const quantity = Math.abs(parseFloat(sm.quantity) || 0);
+
+      return {
+        movement_id: sm.id,
+        created_at: sm.created_at,
+        quantity: parseFloat(sm.quantity),
+        reason: sm.adjustment_reason,
+        notes: sm.notes,
+        branch_id: sm.branch?.id,
+        branch_name: sm.branch?.name,
+        branch_code: sm.branch?.code,
+        product_id: sm.product?.id,
+        product_name: sm.product?.name,
+        sku: sm.product?.sku,
+        cost_price: costPrice,
+        selling_price: sellingPrice,
+        category_name: sm.product?.category?.name || null,
+        created_by_name: sm.performer ? `${sm.performer.first_name} ${sm.performer.last_name}` : null,
+        cost_loss: quantity * costPrice,
+        retail_loss: quantity * sellingPrice
+      };
     });
 
     // Summary statistics
-    const totalCostLoss = shrinkageData.reduce((sum, s) => sum + parseFloat(s.cost_loss || 0), 0);
-    const totalRetailLoss = shrinkageData.reduce((sum, s) => sum + parseFloat(s.retail_loss || 0), 0);
-    const totalQuantity = shrinkageData.reduce((sum, s) => sum + Math.abs(parseFloat(s.quantity || 0)), 0);
+    const totalCostLoss = shrinkageData.reduce((sum, s) => sum + s.cost_loss, 0);
+    const totalRetailLoss = shrinkageData.reduce((sum, s) => sum + s.retail_loss, 0);
+    const totalQuantity = shrinkageData.reduce((sum, s) => sum + Math.abs(s.quantity), 0);
 
     // By category breakdown
     const byCategory = {};
@@ -1334,9 +1369,9 @@ exports.getShrinkageReport = async (req, res, next) => {
         };
       }
       byCategory[catName].count++;
-      byCategory[catName].total_quantity += Math.abs(parseFloat(s.quantity || 0));
-      byCategory[catName].cost_loss += parseFloat(s.cost_loss || 0);
-      byCategory[catName].retail_loss += parseFloat(s.retail_loss || 0);
+      byCategory[catName].total_quantity += Math.abs(s.quantity);
+      byCategory[catName].cost_loss += s.cost_loss;
+      byCategory[catName].retail_loss += s.retail_loss;
     });
 
     // By branch breakdown (if viewing all branches)
@@ -1352,8 +1387,8 @@ exports.getShrinkageReport = async (req, res, next) => {
         };
       }
       byBranch[s.branch_code].count++;
-      byBranch[s.branch_code].cost_loss += parseFloat(s.cost_loss || 0);
-      byBranch[s.branch_code].retail_loss += parseFloat(s.retail_loss || 0);
+      byBranch[s.branch_code].cost_loss += s.cost_loss;
+      byBranch[s.branch_code].retail_loss += s.retail_loss;
     });
 
     // Top products by shrinkage
@@ -1371,9 +1406,9 @@ exports.getShrinkageReport = async (req, res, next) => {
           occurrences: 0
         };
       }
-      byProduct[s.product_id].total_quantity += Math.abs(parseFloat(s.quantity || 0));
-      byProduct[s.product_id].cost_loss += parseFloat(s.cost_loss || 0);
-      byProduct[s.product_id].retail_loss += parseFloat(s.retail_loss || 0);
+      byProduct[s.product_id].total_quantity += Math.abs(s.quantity);
+      byProduct[s.product_id].cost_loss += s.cost_loss;
+      byProduct[s.product_id].retail_loss += s.retail_loss;
       byProduct[s.product_id].occurrences++;
     });
 
@@ -1408,25 +1443,37 @@ exports.getHourlyReport = async (req, res, next) => {
     const endDate = to_date ? new Date(to_date) : new Date();
     const startDate = from_date ? new Date(from_date) : new Date(endDate.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-    // Hourly breakdown
-    const hourlyData = await sequelize.query(`
-      SELECT
-        EXTRACT(HOUR FROM created_at) as hour,
-        COUNT(*) as sales_count,
-        SUM(total_amount) as revenue,
-        AVG(total_amount) as avg_ticket,
-        MIN(total_amount) as min_ticket,
-        MAX(total_amount) as max_ticket
-      FROM sales
-      WHERE status = 'COMPLETED'
-        AND created_at BETWEEN :startDate AND :endDate
-        ${branch_id ? 'AND branch_id = :branchId' : ''}
-      GROUP BY EXTRACT(HOUR FROM created_at)
-      ORDER BY hour
-    `, {
-      replacements: { startDate, endDate, branchId: branch_id },
-      type: sequelize.QueryTypes.SELECT
+    // Build where clause for sales
+    const saleWhere = {
+      status: 'COMPLETED',
+      created_at: { [Op.between]: [startDate, endDate] }
+    };
+    if (branch_id) saleWhere.branch_id = branch_id;
+
+    // Hourly breakdown using Sequelize ORM
+    const hourlyDataRaw = await Sale.findAll({
+      where: saleWhere,
+      attributes: [
+        [sequelize.fn('EXTRACT', sequelize.literal('HOUR FROM "Sale"."created_at"')), 'hour'],
+        [sequelize.fn('COUNT', sequelize.col('id')), 'sales_count'],
+        [sequelize.fn('SUM', sequelize.col('total_amount')), 'revenue'],
+        [sequelize.fn('AVG', sequelize.col('total_amount')), 'avg_ticket'],
+        [sequelize.fn('MIN', sequelize.col('total_amount')), 'min_ticket'],
+        [sequelize.fn('MAX', sequelize.col('total_amount')), 'max_ticket']
+      ],
+      group: [sequelize.fn('EXTRACT', sequelize.literal('HOUR FROM "Sale"."created_at"'))],
+      order: [[sequelize.fn('EXTRACT', sequelize.literal('HOUR FROM "Sale"."created_at"')), 'ASC']],
+      raw: true
     });
+
+    const hourlyData = hourlyDataRaw.map(h => ({
+      hour: parseInt(h.hour),
+      sales_count: parseInt(h.sales_count) || 0,
+      revenue: parseFloat(h.revenue) || 0,
+      avg_ticket: parseFloat(h.avg_ticket) || 0,
+      min_ticket: parseFloat(h.min_ticket) || 0,
+      max_ticket: parseFloat(h.max_ticket) || 0
+    }));
 
     // Format and add percentage
     const totalSales = hourlyData.reduce((sum, h) => sum + parseInt(h.sales_count || 0), 0);
@@ -1444,24 +1491,29 @@ exports.getHourlyReport = async (req, res, next) => {
       revenue_percentage: totalRevenue > 0 ? ((parseFloat(h.revenue) / totalRevenue) * 100).toFixed(2) : 0
     }));
 
-    // Day of week breakdown
-    const dayOfWeekData = await sequelize.query(`
-      SELECT
-        EXTRACT(DOW FROM created_at) as day_of_week,
-        TO_CHAR(created_at, 'Day') as day_name,
-        COUNT(*) as sales_count,
-        SUM(total_amount) as revenue,
-        AVG(total_amount) as avg_ticket
-      FROM sales
-      WHERE status = 'COMPLETED'
-        AND created_at BETWEEN :startDate AND :endDate
-        ${branch_id ? 'AND branch_id = :branchId' : ''}
-      GROUP BY EXTRACT(DOW FROM created_at), TO_CHAR(created_at, 'Day')
-      ORDER BY day_of_week
-    `, {
-      replacements: { startDate, endDate, branchId: branch_id },
-      type: sequelize.QueryTypes.SELECT
+    // Day of week breakdown using Sequelize ORM
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+    const dayOfWeekRaw = await Sale.findAll({
+      where: saleWhere,
+      attributes: [
+        [sequelize.fn('EXTRACT', sequelize.literal('DOW FROM "Sale"."created_at"')), 'day_of_week'],
+        [sequelize.fn('COUNT', sequelize.col('id')), 'sales_count'],
+        [sequelize.fn('SUM', sequelize.col('total_amount')), 'revenue'],
+        [sequelize.fn('AVG', sequelize.col('total_amount')), 'avg_ticket']
+      ],
+      group: [sequelize.fn('EXTRACT', sequelize.literal('DOW FROM "Sale"."created_at"'))],
+      order: [[sequelize.fn('EXTRACT', sequelize.literal('DOW FROM "Sale"."created_at"')), 'ASC']],
+      raw: true
     });
+
+    const dayOfWeekData = dayOfWeekRaw.map(d => ({
+      day_of_week: parseInt(d.day_of_week),
+      day_name: dayNames[parseInt(d.day_of_week)] || '',
+      sales_count: parseInt(d.sales_count) || 0,
+      revenue: parseFloat(d.revenue) || 0,
+      avg_ticket: parseFloat(d.avg_ticket) || 0
+    }));
 
     // Peak hours analysis
     const peakHours = [...hourlyWithPercentage]
@@ -1475,13 +1527,7 @@ exports.getHourlyReport = async (req, res, next) => {
     return success(res, {
       period: { start_date: startDate, end_date: endDate },
       hourly_data: hourlyWithPercentage,
-      day_of_week_data: dayOfWeekData.map(d => ({
-        day_of_week: parseInt(d.day_of_week),
-        day_name: d.day_name.trim(),
-        sales_count: parseInt(d.sales_count),
-        revenue: parseFloat(d.revenue),
-        avg_ticket: parseFloat(d.avg_ticket)
-      })),
+      day_of_week_data: dayOfWeekData,
       peak_hours: peakHours,
       slow_hours: slowHours,
       summary: {
@@ -1511,38 +1557,37 @@ exports.getBranchComparisonReport = async (req, res, next) => {
       order: [['code', 'ASC']]
     });
 
-    // Sales metrics by branch
+    // Sales metrics by branch using Sequelize ORM
     const branchMetrics = await Promise.all(branches.map(async (branch) => {
-      // Sales data
+      const saleWhere = {
+        branch_id: branch.id,
+        status: 'COMPLETED',
+        created_at: { [Op.between]: [startDate, endDate] }
+      };
+
+      // Sales data using Sequelize ORM
       const salesData = await Sale.findOne({
-        where: {
-          branch_id: branch.id,
-          status: 'COMPLETED',
-          created_at: { [Op.between]: [startDate, endDate] }
-        },
+        where: saleWhere,
         attributes: [
           [sequelize.fn('COUNT', sequelize.col('id')), 'total_sales'],
-          [sequelize.fn('SUM', sequelize.col('total_amount')), 'total_revenue'],
-          [sequelize.fn('AVG', sequelize.col('total_amount')), 'avg_ticket'],
-          [sequelize.fn('SUM', sequelize.col('discount_amount')), 'total_discounts']
-        ]
+          [sequelize.fn('COALESCE', sequelize.fn('SUM', sequelize.col('total_amount')), 0), 'total_revenue'],
+          [sequelize.fn('COALESCE', sequelize.fn('AVG', sequelize.col('total_amount')), 0), 'avg_ticket'],
+          [sequelize.fn('COALESCE', sequelize.fn('SUM', sequelize.col('discount_amount')), 0), 'total_discounts']
+        ],
+        raw: true
       });
 
-      // Payment breakdown
+      // Payment breakdown using Sequelize ORM
       const paymentData = await SalePayment.findAll({
         attributes: [
-          [sequelize.fn('SUM', sequelize.col('amount')), 'total'],
-          'payment_method_id'
+          'payment_method_id',
+          [sequelize.fn('SUM', sequelize.col('amount')), 'total']
         ],
         include: [
           {
             model: Sale,
             as: 'sale',
-            where: {
-              branch_id: branch.id,
-              status: 'COMPLETED',
-              created_at: { [Op.between]: [startDate, endDate] }
-            },
+            where: saleWhere,
             attributes: []
           },
           {
@@ -1551,26 +1596,36 @@ exports.getBranchComparisonReport = async (req, res, next) => {
             attributes: ['code', 'name']
           }
         ],
-        where: { status: 'APPROVED' },
-        group: ['payment_method_id', 'payment_method.id', 'payment_method.code', 'payment_method.name']
+        group: ['payment_method_id', 'payment_method.id', 'payment_method.code', 'payment_method.name'],
+        raw: true,
+        nest: true
       });
 
-      // Stock value
-      const stockValue = await sequelize.query(`
-        SELECT
-          SUM(bs.quantity * p.cost_price) as total_cost_value,
-          SUM(bs.quantity * p.selling_price) as total_retail_value,
-          COUNT(DISTINCT bs.product_id) as unique_products
-        FROM branch_stocks bs
-        INNER JOIN products p ON bs.product_id = p.id
-        WHERE bs.branch_id = :branchId
-          AND p.is_active = true
-      `, {
-        replacements: { branchId: branch.id },
-        type: sequelize.QueryTypes.SELECT
+      // Stock value using Sequelize ORM
+      const stockData = await BranchStock.findAll({
+        where: { branch_id: branch.id },
+        include: [{
+          model: Product,
+          as: 'product',
+          where: { is_active: true },
+          attributes: ['cost_price', 'selling_price']
+        }]
       });
 
-      // Discrepancies
+      // Calculate stock values manually
+      let totalCostValue = 0;
+      let totalRetailValue = 0;
+      const uniqueProducts = stockData.length;
+
+      stockData.forEach(bs => {
+        const quantity = parseFloat(bs.quantity) || 0;
+        const costPrice = parseFloat(bs.product?.cost_price) || 0;
+        const sellingPrice = parseFloat(bs.product?.selling_price) || 0;
+        totalCostValue += quantity * costPrice;
+        totalRetailValue += quantity * sellingPrice;
+      });
+
+      // Discrepancies using Sequelize ORM
       const discrepancyData = await RegisterSession.findOne({
         where: {
           branch_id: branch.id,
@@ -1579,24 +1634,22 @@ exports.getBranchComparisonReport = async (req, res, next) => {
         },
         attributes: [
           [sequelize.fn('COUNT', sequelize.col('id')), 'session_count'],
-          [sequelize.fn('SUM', sequelize.col('discrepancy_cash')), 'total_discrepancy']
-        ]
+          [sequelize.fn('COALESCE', sequelize.fn('SUM', sequelize.col('discrepancy_cash')), 0), 'total_discrepancy']
+        ],
+        raw: true
       });
 
-      // Top product
-      const topProduct = await SaleItem.findOne({
+      // Top product using Sequelize ORM
+      const topProductData = await SaleItem.findAll({
         attributes: [
+          'product_id',
           [sequelize.fn('SUM', sequelize.col('SaleItem.line_total')), 'revenue']
         ],
         include: [
           {
             model: Sale,
             as: 'sale',
-            where: {
-              branch_id: branch.id,
-              status: 'COMPLETED',
-              created_at: { [Op.between]: [startDate, endDate] }
-            },
+            where: saleWhere,
             attributes: []
           },
           {
@@ -1605,43 +1658,43 @@ exports.getBranchComparisonReport = async (req, res, next) => {
             attributes: ['name', 'sku']
           }
         ],
-        group: ['product.id', 'product.name', 'product.sku'],
+        group: ['product_id', 'product.id', 'product.name', 'product.sku'],
         order: [[sequelize.fn('SUM', sequelize.col('SaleItem.line_total')), 'DESC']],
-        limit: 1
+        limit: 1,
+        raw: true,
+        nest: true
       });
 
-      const sales = salesData?.toJSON();
-      const stock = stockValue[0];
-      const discrepancy = discrepancyData?.toJSON();
+      const topProduct = topProductData[0];
 
       return {
         branch_id: branch.id,
         branch_name: branch.name,
         branch_code: branch.code,
         sales: {
-          total_sales: parseInt(sales?.total_sales) || 0,
-          total_revenue: parseFloat(sales?.total_revenue) || 0,
-          avg_ticket: parseFloat(sales?.avg_ticket) || 0,
-          total_discounts: parseFloat(sales?.total_discounts) || 0
+          total_sales: parseInt(salesData?.total_sales) || 0,
+          total_revenue: parseFloat(salesData?.total_revenue) || 0,
+          avg_ticket: parseFloat(salesData?.avg_ticket) || 0,
+          total_discounts: parseFloat(salesData?.total_discounts) || 0
         },
         payments: paymentData.map(p => ({
           method: p.payment_method?.code,
           name: p.payment_method?.name,
-          total: parseFloat(p.toJSON().total)
+          total: parseFloat(p.total) || 0
         })),
         inventory: {
-          unique_products: parseInt(stock?.unique_products) || 0,
-          cost_value: parseFloat(stock?.total_cost_value) || 0,
-          retail_value: parseFloat(stock?.total_retail_value) || 0
+          unique_products: uniqueProducts,
+          cost_value: totalCostValue,
+          retail_value: totalRetailValue
         },
         discrepancies: {
-          session_count: parseInt(discrepancy?.session_count) || 0,
-          total_discrepancy: parseFloat(discrepancy?.total_discrepancy) || 0
+          session_count: parseInt(discrepancyData?.session_count) || 0,
+          total_discrepancy: parseFloat(discrepancyData?.total_discrepancy) || 0
         },
         top_product: topProduct ? {
           name: topProduct.product?.name,
           sku: topProduct.product?.sku,
-          revenue: parseFloat(topProduct.toJSON().revenue)
+          revenue: parseFloat(topProduct.revenue) || 0
         } : null
       };
     }));

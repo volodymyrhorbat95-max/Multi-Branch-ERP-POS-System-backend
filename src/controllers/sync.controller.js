@@ -434,7 +434,7 @@ exports.uploadOfflineSales = async (req, res, next) => {
 // Download data for offline use
 exports.downloadForOffline = async (req, res, next) => {
   try {
-    const { branch_id } = req.params;
+    const { branch_id } = req.body;
 
     // Get all active products with stock
     const products = await Product.findAll({
