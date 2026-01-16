@@ -6,7 +6,7 @@ module.exports = {
     // Get issued invoices with branch and user info
     const [invoices] = await queryInterface.sequelize.query(
       `SELECT i.id, i.invoice_type_id, i.point_of_sale, i.net_amount, i.tax_amount, i.total_amount,
-              i.issued_at, i.branch_id, s.created_by, it.code as invoice_type_code
+              i.issued_at, s.branch_id, s.created_by, it.code as invoice_type_code
        FROM invoices i
        JOIN invoice_types it ON i.invoice_type_id = it.id
        JOIN sales s ON i.sale_id = s.id
