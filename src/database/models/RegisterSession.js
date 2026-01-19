@@ -57,7 +57,25 @@ module.exports = (sequelize) => {
       type: DataTypes.TEXT,
       allowNull: true
     },
-    // Opening bill denomination breakdown
+    // Opening bill denomination breakdown (Argentina 2024 bills)
+    opening_bills_20000: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      comment: 'Quantity of $20000 bills at opening'
+    },
+    opening_bills_10000: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      comment: 'Quantity of $10000 bills at opening'
+    },
+    opening_bills_2000: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      comment: 'Quantity of $2000 bills at opening'
+    },
     opening_bills_1000: {
       type: DataTypes.INTEGER,
       allowNull: false,
@@ -87,18 +105,6 @@ module.exports = (sequelize) => {
       allowNull: false,
       defaultValue: 0,
       comment: 'Quantity of $50 bills at opening'
-    },
-    opening_bills_20: {
-      type: DataTypes.INTEGER,
-      allowNull: false,
-      defaultValue: 0,
-      comment: 'Quantity of $20 bills at opening'
-    },
-    opening_bills_10: {
-      type: DataTypes.INTEGER,
-      allowNull: false,
-      defaultValue: 0,
-      comment: 'Quantity of $10 bills at opening'
     },
     opening_coins: {
       type: DataTypes.DECIMAL(12, 2),
@@ -136,7 +142,22 @@ module.exports = (sequelize) => {
       type: DataTypes.DECIMAL(12, 2),
       allowNull: true
     },
-    // Closing bill denomination breakdown
+    // Closing bill denomination breakdown (Argentina 2024 bills)
+    closing_bills_20000: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      comment: 'Quantity of $20000 bills at closing'
+    },
+    closing_bills_10000: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      comment: 'Quantity of $10000 bills at closing'
+    },
+    closing_bills_2000: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      comment: 'Quantity of $2000 bills at closing'
+    },
     closing_bills_1000: {
       type: DataTypes.INTEGER,
       allowNull: true,
@@ -161,16 +182,6 @@ module.exports = (sequelize) => {
       type: DataTypes.INTEGER,
       allowNull: true,
       comment: 'Quantity of $50 bills at closing'
-    },
-    closing_bills_20: {
-      type: DataTypes.INTEGER,
-      allowNull: true,
-      comment: 'Quantity of $20 bills at closing'
-    },
-    closing_bills_10: {
-      type: DataTypes.INTEGER,
-      allowNull: true,
-      comment: 'Quantity of $10 bills at closing'
     },
     closing_coins: {
       type: DataTypes.DECIMAL(12, 2),
