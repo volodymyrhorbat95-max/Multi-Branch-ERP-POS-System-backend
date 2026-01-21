@@ -241,6 +241,13 @@ async function processPendingInvoices() {
  * Start the invoice retry scheduler
  */
 function start() {
+  // Check if FactuHoy integration is enabled
+  if (process.env.FACTUHOY_ENABLED === 'false') {
+    logger.info('[Invoice Retry Scheduler] FactuHoy integration disabled - scheduler not started');
+    logger.info('[Invoice Retry Scheduler] Invoicing is done manually in FactuHoy by cashiers');
+    return;
+  }
+
   if (retryIntervalId) {
     logger.warn('[Invoice Retry Scheduler] Already running');
     return;

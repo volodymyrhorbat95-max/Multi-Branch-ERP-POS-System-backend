@@ -816,36 +816,44 @@ exports.create = async (req, res, next) => {
     }
 
     // Automatic invoice generation through FactuHoy (async, don't block response)
-    setImmediate(async () => {
-      try {
-        await generateInvoiceForSale(sale.id, branch_id, customer_id, req.user.id, invoice_override);
-      } catch (error) {
-        logger.error(`Failed to generate invoice for sale ${sale.sale_number}`, {
-          sale_id: sale.id,
-          error: error.message
-        });
+    // DISABLED: FactuHoy confirmed no API access - invoicing is done manually
+    if (process.env.FACTUHOY_ENABLED !== 'false') {
+      setImmediate(async () => {
+        try {
+          await generateInvoiceForSale(sale.id, branch_id, customer_id, req.user.id, invoice_override);
+        } catch (error) {
+          logger.error(`Failed to generate invoice for sale ${sale.sale_number}`, {
+            sale_id: sale.id,
+            error: error.message
+          });
 
-        // Create FAILED_INVOICE alert
-        const failedInvoiceAlert = await Alert.create({
-          id: uuidv4(),
-          alert_type: 'FAILED_INVOICE',
-          severity: 'HIGH',
-          branch_id,
-          user_id: req.user.id,
-          title: `Error al generar factura en ${branch.name}`,
-          message: `No se pudo generar la factura para la venta ${sale.sale_number} ($${totalAmount.toFixed(2)}). Error: ${error.message}`,
-          reference_type: 'SALE',
-          reference_id: sale.id
-        });
+          // Create FAILED_INVOICE alert
+          const failedInvoiceAlert = await Alert.create({
+            id: uuidv4(),
+            alert_type: 'FAILED_INVOICE',
+            severity: 'HIGH',
+            branch_id,
+            user_id: req.user.id,
+            title: `Error al generar factura en ${branch.name}`,
+            message: `No se pudo generar la factura para la venta ${sale.sale_number} ($${totalAmount.toFixed(2)}). Error: ${error.message}`,
+            reference_type: 'SALE',
+            reference_id: sale.id
+          });
 
-        // Emit via Socket.io
-        const alertIo = req.app.get('io');
-        if (alertIo) {
-          alertIo.to(`branch_${branch_id}`).emit('ALERT_CREATED', failedInvoiceAlert);
-          alertIo.to('owners').emit('ALERT_CREATED', failedInvoiceAlert);
+          // Emit via Socket.io
+          const alertIo = req.app.get('io');
+          if (alertIo) {
+            alertIo.to(`branch_${branch_id}`).emit('ALERT_CREATED', failedInvoiceAlert);
+            alertIo.to('owners').emit('ALERT_CREATED', failedInvoiceAlert);
+          }
         }
-      }
-    });
+      });
+    } else {
+      logger.info(`FactuHoy disabled - invoice for sale ${sale.sale_number} must be created manually`, {
+        sale_id: sale.id,
+        sale_number: sale.sale_number
+      });
+    }
 
     return created(res, createdSale);
   } catch (error) {
@@ -1105,7 +1113,8 @@ exports.voidSale = async (req, res, next) => {
 
     // CRITICAL: Generate credit note asynchronously for voided invoiced sales
     // This must happen AFTER the transaction commits to ensure sale is voided first
-    if (sale.invoice && sale.invoice.status === 'ISSUED' && sale.invoice.cae) {
+    // DISABLED when FactuHoy has no API access - credit notes must be created manually
+    if (process.env.FACTUHOY_ENABLED !== 'false' && sale.invoice && sale.invoice.status === 'ISSUED' && sale.invoice.cae) {
       // Call async credit note generation (don't await - fire and forget)
       generateCreditNoteForVoidedSale(sale.invoice.id, sale.id, reason, req.user.id)
         .catch(error => {
@@ -1115,6 +1124,11 @@ exports.voidSale = async (req, res, next) => {
             sale_id: sale.id
           });
         });
+    } else if (process.env.FACTUHOY_ENABLED === 'false' && sale.invoice) {
+      logger.info(`FactuHoy disabled - credit note for voided sale ${sale.sale_number} must be created manually`, {
+        sale_id: sale.id,
+        invoice_id: sale.invoice.id
+      });
     }
 
     // Emit real-time event
